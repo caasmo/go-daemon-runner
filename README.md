@@ -1,6 +1,8 @@
 # go-daemon-runner
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/caasmo/go-daemon-runner)](https://pkg.go.dev/github.com/caasmo/go-daemon-runner)
+[![Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/caasmo/go-daemon-runner/master/.github/badges/coverage.json)](https://github.com/caasmo/go-daemon-runner/actions/workflows/test.yml)
+[![golangci-lint](https://github.com/caasmo/go-daemon-runner/actions/workflows/golangci-lint.yml/badge.svg)](https://github.com/caasmo/go-daemon-runner/actions/workflows/golangci-lint.yml)
 
 Compose your program from background goroutines — go-daemon-runner provides the process lifecycle around them: sequential start, signal handling, and concurrent, deadline-bounded graceful shutdown.
 
