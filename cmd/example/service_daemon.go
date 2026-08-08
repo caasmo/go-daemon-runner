@@ -30,10 +30,14 @@ type ServiceDaemon struct {
 }
 
 func NewServiceDaemon(store *Store, logger *slog.Logger) *ServiceDaemon {
-	return &ServiceDaemon{
+	d := &ServiceDaemon{
 		Base:  daemon.NewBase("ServiceDaemon", logger),
 		store: store,
 	}
+	// Every log line carries the daemon's identity: reuse the
+	// daemon_name attribute the runner attaches to lifecycle logs.
+	d.Logger = d.Logger.With("daemon_name", d.Name())
+	return d
 }
 
 func (d *ServiceDaemon) Run() error {
@@ -76,7 +80,7 @@ type Store struct {
 // exactly when the library has stopped — no earlier, no later.
 func (s *Store) Sync(ctx context.Context) error {
 	go func() {
-		ticker := time.NewTicker(2 * time.Second)
+		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
 
 		for {

@@ -30,11 +30,15 @@ type BackupDaemon struct {
 }
 
 func NewBackupDaemon(interval time.Duration, paused *atomic.Bool, logger *slog.Logger) *BackupDaemon {
-	return &BackupDaemon{
+	d := &BackupDaemon{
 		Base:     daemon.NewBase("BackupDaemon", logger),
 		interval: interval,
 		paused:   paused,
 	}
+	// Every log line carries the daemon's identity: reuse the
+	// daemon_name attribute the runner attaches to lifecycle logs.
+	d.Logger = d.Logger.With("daemon_name", d.Name())
+	return d
 }
 
 func (d *BackupDaemon) Run() error {

@@ -16,13 +16,13 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
 	// === BackupDaemon: periodic database snapshot ===
-	// Ticks every 2 seconds and takes a snapshot of the DB.
+	// Ticks every 10 seconds and takes a snapshot of the DB.
 	//
 	// SIGHUP deactivates the backup: the reload hook flips the
 	// shared pause flag, which the daemon reads on every tick. A
 	// second SIGHUP resumes it. Try it: kill -HUP <pid>
 	backupPaused := &atomic.Bool{}
-	backupDaemon := NewBackupDaemon(2*time.Second, backupPaused, logger)
+	backupDaemon := NewBackupDaemon(10*time.Second, backupPaused, logger)
 	reloadFunc := func() error {
 		backupPaused.Store(!backupPaused.Load()) // flip: deactivate the backup
 		logger.Info("reload: backup pause flag", "paused", backupPaused.Load())
@@ -30,13 +30,13 @@ func main() {
 	}
 
 	// === QueueDaemon: background job queue ===
-	// A worker consumes jobs from the daemon's buffered channel.
-	// Seed a few jobs now — the channel is buffered, so main can
-	// enqueue them before the worker starts inside Run.
+	// A bounded errgroup pool (SetLimit 2) processes jobs. Submit
+	// a few jobs now — the buffered channel lets main enqueue
+	// them before the daemon starts inside Run.
 	queueDaemon := NewQueueDaemon(logger)
-	queueDaemon.jobs <- "backup report"
-	queueDaemon.jobs <- "rotate logs"
-	queueDaemon.jobs <- "send digest"
+	queueDaemon.SubmitJob("backup report")
+	queueDaemon.SubmitJob("rotate logs")
+	queueDaemon.SubmitJob("send digest")
 
 	// === ServiceDaemon: wraps a context-aware store ===
 	// The store is the external library the daemon delegates to:
