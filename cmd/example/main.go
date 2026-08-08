@@ -1,4 +1,4 @@
-// Command example wires three daemons through the runner: sequential
+// Command example wires four daemons through the runner: sequential
 // start, signal-driven main loop, and concurrent graceful shutdown.
 // Run it with: go run ./cmd/example
 package main
@@ -29,20 +29,19 @@ func main() {
 		return nil
 	}
 
-	// === QueueDaemon: background job queue ===
-	// A bounded errgroup pool (SetLimit 2) processes jobs. Submit
-	// a few jobs now — the buffered channel lets main enqueue
-	// them before the daemon starts inside Run.
-	queueDaemon := NewQueueDaemon(logger)
-	queueDaemon.SubmitJob("backup report")
-	queueDaemon.SubmitJob("rotate logs")
-	queueDaemon.SubmitJob("send digest")
-
 	// === ContinuousReplicaDaemon: continuous database replication ===
 	// The daemon delegates to a context-aware replication engine —
 	// litestream-style, streaming the WAL to a remote replica — and
 	// flushes the final replication position on clean shutdown.
 	replicaDaemon := NewContinuousReplicaDaemon(&ReplicaEngine{}, logger)
+
+	// === LoggerDaemon + LogProducerDaemon: inter-daemon communication ===
+	// The logger owns the messages channel and exposes only its
+	// write-end via Chan(); main wires both by constructing the
+	// producer with the logger's channel. On shutdown the logger
+	// drains the channel before signaling completion.
+	loggerDaemon := NewLoggerDaemon(logger)
+	producerDaemon := NewLogProducerDaemon(loggerDaemon.Chan(), 10*time.Second, logger)
 
 	// === Wire the daemons through the runner ===
 	r, err := run.NewRunner(
@@ -56,8 +55,9 @@ func main() {
 	}
 
 	r.Add(backupDaemon)
-	r.Add(queueDaemon)
 	r.Add(replicaDaemon)
+	r.Add(loggerDaemon)
+	r.Add(producerDaemon)
 
 	// === Run ===
 	// Run blocks until SIGINT/SIGQUIT/SIGTERM, then shuts the started

@@ -17,6 +17,7 @@ Add and control the lifecycle of goroutine-based daemons.
   - [Options](#options)
   - [Signals](#signals)
   - [The reload hook](#the-reload-hook)
+- [Communicating daemons](#communicating-daemons)
 
 ## Installation
 
@@ -33,7 +34,7 @@ Usage pattern: `daemon` to build daemons, `run` to run them.
 
 ## Runnable example
 
-A complete runnable example of the library — three daemons covering the three blocking patterns of [rule 2](#rules) plus the reload hook — lives in [`cmd/example`](cmd/example/main.go):
+A complete runnable example of the library — daemons covering the blocking patterns of [rule 2](#rules), including a communicating pair (a producer sending messages to a logger that owns the channel), plus the reload hook — lives in [`cmd/example`](cmd/example/main.go):
 
 ```
 go run ./cmd/example
@@ -210,3 +211,12 @@ if err := r.Run(); err != nil {
 	panic(err)
 }
 ```
+
+## Communicating daemons
+
+Daemons communicate the Go way — shared channels, not shared state. Forms:
+
+- **Channel sharing at init time** — as in the example: main wires the write-end of one daemon's channel into another's constructor (`NewLogProducerDaemon(loggerDaemon.Chan(), ...)` in [main.go](cmd/example/main.go)). The consumer owns the channel, the drain, and the shutdown flush; producers hold only the write-end. See [logger_daemon.go](cmd/example/logger_daemon.go) and [log_producer_daemon.go](cmd/example/log_producer_daemon.go).
+- **Channel sharing at runtime** — a daemon exposes a `Submit`-style method (`QueueDaemon.SubmitJob` in [queue_daemon.go](cmd/example/queue_daemon.go)); callers never touch the channel.
+- **Context exposure** — a daemon's `Chan()` returns its context too, so producers stop sending before the owner drains and closes ([restinpieces' log daemon](https://github.com/caasmo/restinpieces/blob/master/log/daemon.go)).
+- **Shared state** — a common pointer mutated in place, e.g. the reload hook flipping the backup pause flag in [main.go](cmd/example/main.go).
