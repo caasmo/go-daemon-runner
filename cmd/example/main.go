@@ -6,6 +6,7 @@ package main
 import (
 	"log/slog"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/caasmo/go-daemon-runner/run"
@@ -14,29 +15,36 @@ import (
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
-	// --- Build the daemons (one file per daemon, each documenting
-	// its simulated workload and blocking pattern) ---
-	backupDaemon := NewBackupDaemon(2*time.Second, logger)
-	queueDaemon := NewQueueDaemon(logger)
-	serviceDaemon := NewServiceDaemon(&Store{Logger: logger}, logger)
+	// === BackupDaemon: periodic database snapshot ===
+	// Ticks every 2 seconds and takes a snapshot of the DB.
+	//
+	// SIGHUP deactivates the backup: the reload hook flips the
+	// shared pause flag, which the daemon reads on every tick. A
+	// second SIGHUP resumes it. Try it: kill -HUP <pid>
+	backupPaused := &atomic.Bool{}
+	backupDaemon := NewBackupDaemon(2*time.Second, backupPaused, logger)
+	reloadFunc := func() error {
+		backupPaused.Store(!backupPaused.Load()) // flip: deactivate the backup
+		logger.Info("reload: backup pause flag", "paused", backupPaused.Load())
+		return nil
+	}
 
-	// Seed a few jobs; the buffered channel lets main enqueue them
-	// before the worker starts inside Run.
+	// === QueueDaemon: background job queue ===
+	// A worker consumes jobs from the daemon's buffered channel.
+	// Seed a few jobs now — the channel is buffered, so main can
+	// enqueue them before the worker starts inside Run.
+	queueDaemon := NewQueueDaemon(logger)
 	queueDaemon.jobs <- "backup report"
 	queueDaemon.jobs <- "rotate logs"
 	queueDaemon.jobs <- "send digest"
 
-	// The reload hook: a closure that captures the daemon and rebuilds
-	// its state in place — the new state takes effect on the next tick.
-	// Try it while the example runs: kill -HUP <pid>
-	reloadFunc := func() error {
-		paused := !backupDaemon.paused.Load()
-		backupDaemon.paused.Store(paused)
-		logger.Info("reload: toggled backup pause flag", "paused", paused)
-		return nil
-	}
+	// === ServiceDaemon: wraps a context-aware store ===
+	// The store is the external library the daemon delegates to:
+	// it syncs data to disk on its own loop and stops when the
+	// daemon's context is cancelled.
+	serviceDaemon := NewServiceDaemon(&Store{Logger: logger}, logger)
 
-	// --- Wire the daemons through the runner ---
+	// === Wire the daemons through the runner ===
 	r, err := run.NewRunner(
 		run.WithLogger(logger),
 		run.WithShutdownTimeout(10*time.Second),
@@ -51,6 +59,7 @@ func main() {
 	r.Add(queueDaemon)
 	r.Add(serviceDaemon)
 
+	// === Run ===
 	// Run blocks until SIGINT/SIGQUIT/SIGTERM, then shuts the started
 	// daemons down gracefully. Run never calls os.Exit — main maps the
 	// result to an exit code.

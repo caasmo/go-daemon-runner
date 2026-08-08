@@ -26,13 +26,14 @@ import (
 type BackupDaemon struct {
 	daemon.Base // README rule 4: Stop inherited from Base, waits on ShutdownDone
 	interval    time.Duration
-	paused      atomic.Bool // reloaded in place via SIGHUP
+	paused      *atomic.Bool // shared with the reload hook in main.go; read on every tick
 }
 
-func NewBackupDaemon(interval time.Duration, logger *slog.Logger) *BackupDaemon {
+func NewBackupDaemon(interval time.Duration, paused *atomic.Bool, logger *slog.Logger) *BackupDaemon {
 	return &BackupDaemon{
 		Base:     daemon.NewBase("BackupDaemon", logger),
 		interval: interval,
+		paused:   paused,
 	}
 }
 
@@ -48,9 +49,8 @@ func (d *BackupDaemon) Run() error {
 			case <-d.Ctx.Done(): // README rule 2: blocking point; Stop cancels Ctx to unblock it
 				return
 			case <-ticker.C:
-				// paused is toggled in place by the reloadFunc wired
-				// in main.go via run.WithReloadFunc (SIGHUP); a load
-				// here picks it up on the next tick.
+				// The reload hook in main.go flips the shared flag
+				// on SIGHUP; a load here picks it up next tick.
 				if d.paused.Load() {
 					d.Logger.Info("backup skipped - paused")
 					continue
