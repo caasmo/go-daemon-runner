@@ -41,7 +41,7 @@ func main() {
 	// producer with the logger's channel. On shutdown the logger
 	// drains the channel before signaling completion.
 	loggerDaemon := NewLoggerDaemon(logger)
-	producerDaemon := NewLogProducerDaemon(loggerDaemon.Chan(), 10*time.Second, logger)
+	logProducerDaemon := NewLogProducerDaemon(loggerDaemon.Chan(), 10*time.Second, logger)
 
 	// === Wire the daemons through the runner ===
 	r, err := run.NewRunner(
@@ -57,7 +57,7 @@ func main() {
 	r.Add(backupDaemon)
 	r.Add(replicaDaemon)
 	r.Add(loggerDaemon)
-	r.Add(producerDaemon)
+	r.Add(logProducerDaemon)
 
 	// === Run ===
 	// Run blocks until SIGINT/SIGQUIT/SIGTERM, then shuts the started
