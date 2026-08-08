@@ -8,7 +8,7 @@ import (
 	"github.com/caasmo/go-daemon-runner/daemon"
 )
 
-// BackupDaemon simulates a periodic database backup.
+// PeriodicBackupDaemon simulates a periodic database backup.
 //
 // Its real-world counterpart is a component that snapshots a database
 // (or any stateful resource) on a fixed schedule: every tick it takes
@@ -23,15 +23,15 @@ import (
 // close(ShutdownDone) runs after every other cleanup (the first
 // defer executes last), so Stop only returns once the ticker is
 // stopped and the goroutine has fully exited.
-type BackupDaemon struct {
+type PeriodicBackupDaemon struct {
 	daemon.Base // README rule 4: Stop inherited from Base, waits on ShutdownDone
 	interval    time.Duration
 	paused      *atomic.Bool // shared with the reload hook in main.go; read on every tick
 }
 
-func NewBackupDaemon(interval time.Duration, paused *atomic.Bool, logger *slog.Logger) *BackupDaemon {
-	d := &BackupDaemon{
-		Base:     daemon.NewBase("BackupDaemon", logger),
+func NewPeriodicBackupDaemon(interval time.Duration, paused *atomic.Bool, logger *slog.Logger) *PeriodicBackupDaemon {
+	d := &PeriodicBackupDaemon{
+		Base:     daemon.NewBase("PeriodicBackupDaemon", logger),
 		interval: interval,
 		paused:   paused,
 	}
@@ -41,7 +41,7 @@ func NewBackupDaemon(interval time.Duration, paused *atomic.Bool, logger *slog.L
 	return d
 }
 
-func (d *BackupDaemon) Run() error {
+func (d *PeriodicBackupDaemon) Run() error {
 	go func() { // README rule 1: Run spawns the background goroutine
 		defer close(d.ShutdownDone) // README rule 3: first defer, signals completion to Stop
 
@@ -68,6 +68,6 @@ func (d *BackupDaemon) Run() error {
 
 // doWork simulates taking a database snapshot: in a real daemon this
 // would dump the DB, upload the dump to object storage, or similar.
-func (d *BackupDaemon) doWork() {
+func (d *PeriodicBackupDaemon) doWork() {
 	d.Logger.Info("database backup: snapshot taken")
 }

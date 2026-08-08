@@ -15,14 +15,14 @@ import (
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
-	// === BackupDaemon: periodic database snapshot ===
+	// === PeriodicBackupDaemon: periodic database snapshot ===
 	// Ticks every 10 seconds and takes a snapshot of the DB.
 	//
 	// SIGHUP deactivates the backup: the reload hook flips the
 	// shared pause flag, which the daemon reads on every tick. A
 	// second SIGHUP resumes it. Try it: kill -HUP <pid>
 	backupPaused := &atomic.Bool{}
-	backupDaemon := NewBackupDaemon(10*time.Second, backupPaused, logger)
+	backupDaemon := NewPeriodicBackupDaemon(10*time.Second, backupPaused, logger)
 	reloadFunc := func() error {
 		backupPaused.Store(!backupPaused.Load()) // flip: deactivate the backup
 		logger.Info("reload: backup pause flag", "paused", backupPaused.Load())
@@ -38,11 +38,11 @@ func main() {
 	queueDaemon.SubmitJob("rotate logs")
 	queueDaemon.SubmitJob("send digest")
 
-	// === ServiceDaemon: wraps a context-aware store ===
-	// The store is the external library the daemon delegates to:
-	// it syncs data to disk on its own loop and stops when the
-	// daemon's context is cancelled.
-	serviceDaemon := NewServiceDaemon(&Store{Logger: logger}, logger)
+	// === ContinuousReplicaDaemon: continuous database replication ===
+	// The daemon delegates to a context-aware replication engine —
+	// litestream-style, streaming the WAL to a remote replica — and
+	// flushes the final replication position on clean shutdown.
+	replicaDaemon := NewContinuousReplicaDaemon(&ReplicaEngine{Logger: logger}, logger)
 
 	// === Wire the daemons through the runner ===
 	r, err := run.NewRunner(
@@ -57,7 +57,7 @@ func main() {
 
 	r.Add(backupDaemon)
 	r.Add(queueDaemon)
-	r.Add(serviceDaemon)
+	r.Add(replicaDaemon)
 
 	// === Run ===
 	// Run blocks until SIGINT/SIGQUIT/SIGTERM, then shuts the started
