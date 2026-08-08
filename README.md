@@ -2,10 +2,13 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/caasmo/go-daemon-runner)](https://pkg.go.dev/github.com/caasmo/go-daemon-runner)
 
-Add and control the lifecycle of goroutine-based daemons.
+Compose your program from background goroutines — get start, signals, and graceful shutdown for free.
+
+go-daemon-runner is for Go programs built from background goroutines. Your program is a set of components that run for its lifetime — periodic backups, schedulers, log aggregation, replication — each one a goroutine with a start/stop contract. The library handles the process around them: start in order, wait for SIGINT/SIGTERM, shut everything down gracefully within a deadline, reload on SIGHUP.
 
 # Content
 
+- [Features](#features)
 - [Installation](#installation)
 - [The two packages](#the-two-packages)
 - [Runnable example](#runnable-example)
@@ -18,6 +21,13 @@ Add and control the lifecycle of goroutine-based daemons.
   - [Signals](#signals)
   - [The reload hook](#the-reload-hook)
 - [Communicating daemons](#communicating-daemons)
+
+## Features
+
+- **A clean exit.** On SIGTERM/SIGINT every background task is stopped and waited for. No leaked goroutines, no hanging process.
+- **A shutdown that can't hang.** Every stop is bounded by a deadline (default 15s); a task that doesn't stop in time is reported, not waited on forever.
+- **Failure containment at startup.** If a task fails to start, the ones already running are stopped and the error is returned. You never get a half-running program.
+- **Reload without restart.** SIGHUP runs your reload hook — `systemctl reload` works, tasks keep running.
 
 ## Installation
 
