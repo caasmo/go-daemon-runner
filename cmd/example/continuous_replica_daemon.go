@@ -16,8 +16,8 @@ import (
 // It delegates to a context-aware replication engine — like
 // litestream's store (github.com/caasmo/restinpieces-litestream),
 // which streams the WAL to S3, or a MySQL replica applying the
-// binlog — and, after a clean shutdown, flushes the final
-// replication state before signaling completion.
+// binlog — and, on shutdown, flushes the final replication state
+// before signaling completion.
 //
 // Blocking pattern 3 — delegation to a context-aware call: the
 // goroutine contains no blocking point of its own construction. It
@@ -49,24 +49,26 @@ func NewContinuousReplicaDaemon(engine *ReplicaEngine, logger *slog.Logger) *Con
 func (d *ContinuousReplicaDaemon) Run() error {
 	go func() { // README rule 1: Run spawns the background goroutine
 		defer close(d.ShutdownDone) // README rule 3: first defer, signals completion to Stop
+		defer d.doShutdownCleanup() // final flush, runs even when Replicate fails
 
 		// Replicate is a library call: it runs the engine's loop in
 		// its own goroutine, observing d.Ctx (cancelled by Stop()),
 		// and returns once the loop has exited.
-		if err := d.engine.Replicate(d.Ctx); err != nil { // README rule 2: blocking point — a context-aware library call
+		err := d.engine.Replicate(d.Ctx) // README rule 2: blocking point — a context-aware library call
+		if err != nil {
 			d.Logger.Error("replication failed", "error", err)
-			return // a failed replication is not cleaned up
+			return
 		}
-		d.doShutdownCleanup() // final flush after a clean shutdown
 	}()
 	return nil
 }
 
-// doShutdownCleanup runs after the engine has shut down cleanly:
-// in a real daemon it would flush the final replication position
-// or deregister the replica.
+// doShutdownCleanup runs after the engine has shut down, cleanly or
+// not: in a real daemon it would flush the final replication position
+// or deregister the replica. It is deferred so it runs even when
+// Replicate failed.
 func (d *ContinuousReplicaDaemon) doShutdownCleanup() {
-	d.Logger.Info("flushing final replication position after a clean shutdown")
+	d.Logger.Info("flushing final replication position")
 }
 
 // ReplicaEngine is the external replication library the daemon

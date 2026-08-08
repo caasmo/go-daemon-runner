@@ -64,7 +64,8 @@ func main() {
 	// daemons down gracefully. Run never calls os.Exit — main maps the
 	// result to an exit code.
 	logger.Info("example running - send SIGINT/SIGTERM to stop, SIGHUP to reload")
-	if err := r.Run(); err != nil {
+	err = r.Run()
+	if err != nil {
 		logger.Error("runner exited with errors", "error", err)
 		os.Exit(1)
 	}
