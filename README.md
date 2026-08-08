@@ -33,7 +33,7 @@ Usage pattern: `daemon` to build daemons, `run` to run them.
 
 ## Runnable example
 
-A complete runnable example of the library — three daemons covering the three blocking patterns plus the reload hook — lives in [`cmd/example`](cmd/example/main.go):
+A complete runnable example of the library — three daemons covering the three blocking patterns of [rule 2](#rules) plus the reload hook — lives in [`cmd/example`](cmd/example/main.go):
 
 ```
 go run ./cmd/example
@@ -59,7 +59,13 @@ The interface alone is not enough. The runner calls [`Run`](daemon/daemon.go) at
 
 1. **`Run` must spawn the daemon's background goroutine.** It must return an error if startup fails. It may return `nil` immediately once the goroutine is running, or block until startup is confirmed.
 
-2. **The goroutine must reach a blocking point.** It must block until shutdown is signaled — a select on `Ctx.Done()`, a bare `<-Ctx.Done()`, or a context-aware library call. A goroutine that never blocks would keep the process alive.
+2. **The goroutine must reach a blocking point.** It must block until shutdown is signaled, among others:
+
+   1. A select on `Ctx.Done()`
+   2. A bare `<-Ctx.Done()`
+   3. A context-aware library call
+
+   A goroutine that never blocks would keep the process alive.
 
 3. **The goroutine must signal completion of shutdown.** Register `defer close(ShutdownDone)` as its **first** defer — defers run last-in-first-out, so it executes after every other deferred cleanup and `Stop` unblocks only once all cleanup has completed.
 
