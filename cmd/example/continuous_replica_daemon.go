@@ -43,6 +43,9 @@ func NewContinuousReplicaDaemon(engine *ReplicaEngine, logger *slog.Logger) *Con
 	// Every log line carries the daemon's identity: reuse the
 	// daemon_name attribute the runner attaches to lifecycle logs.
 	d.Logger = d.Logger.With("daemon_name", d.Name())
+	// The engine is the daemon's inner loop — its log lines must
+	// carry the same identity, so hand it the enriched logger.
+	d.engine.Logger = d.Logger
 	return d
 }
 

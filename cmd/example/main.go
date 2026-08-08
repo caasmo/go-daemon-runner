@@ -42,7 +42,7 @@ func main() {
 	// The daemon delegates to a context-aware replication engine —
 	// litestream-style, streaming the WAL to a remote replica — and
 	// flushes the final replication position on clean shutdown.
-	replicaDaemon := NewContinuousReplicaDaemon(&ReplicaEngine{Logger: logger}, logger)
+	replicaDaemon := NewContinuousReplicaDaemon(&ReplicaEngine{}, logger)
 
 	// === Wire the daemons through the runner ===
 	r, err := run.NewRunner(
