@@ -145,6 +145,14 @@ if err := r.Run(); err != nil {
 }
 ```
 
+A complete runnable version of this wiring — three daemons covering the three blocking patterns plus the reload hook — lives in [`cmd/example`](cmd/example/main.go):
+
+```
+go run ./cmd/example
+```
+
+The backup daemon ticks every 2 seconds, the queue daemon processes seeded jobs through a worker, and the service daemon blocks on a context-aware store. While it runs, `kill -HUP <pid>` toggles the backup pause flag in place (visible on the next tick), and SIGINT/SIGTERM shuts everything down gracefully.
+
 ### Options
 
 - [`WithLogger(l *slog.Logger)`](run/run.go) — the logger for lifecycle logging. Default: `slog.Default()`; a nil logger falls back to it.
