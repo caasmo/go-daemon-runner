@@ -129,6 +129,16 @@ func (r *Runner) handleSIGHUP() {
 // re-run d.Run() on already-started daemons. The runner trusts the
 // caller on this — a second call is not guarded.
 func (r *Runner) Run() error {
+	// signal.Notify is process-global state: the runtime binds the
+	// signal to this channel for the whole process, suppressing the
+	// default dispositions process-wide. Register before daemons
+	// start: a termination signal arriving during a slow daemon
+	// startup would otherwise hit its default disposition and kill the
+	// process without graceful shutdown. Registered early, the signal
+	// is buffered and honored once the signal loop starts.
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM, syscall.SIGHUP)
+
 	// --- Start Daemons Sequentially ---
 	r.logger.Info("starting daemons sequentially...")
 	var startErr error
@@ -150,9 +160,6 @@ func (r *Runner) Run() error {
 
 	// Signal loop — only entered if all daemons started successfully.
 	if startErr == nil {
-		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM, syscall.SIGHUP)
-
 		running := true
 		for running {
 			sig := <-sigChan
@@ -165,10 +172,13 @@ func (r *Runner) Run() error {
 				r.handleSIGHUP()
 			}
 		}
-
-		signal.Stop(sigChan)
-		close(sigChan)
 	}
+
+	// Stop relaying signals to the channel — the runtime restores each
+	// signal's default disposition — and release the channel. Runs on
+	// every path, also when a startup failure skipped the signal loop.
+	signal.Stop(sigChan)
+	close(sigChan)
 
 	// --- Graceful Shutdown ---
 	gracefulCtx, cancelShutdown := context.WithTimeout(context.Background(), r.shutdownTimeout)
