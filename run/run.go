@@ -94,7 +94,7 @@ func NewRunner(opts ...Option) (*Runner, error) {
 
 // Add registers a daemon whose lifecycle will be managed by the runner.
 // Add must be called before Run: daemons added after Run has entered
-// the signal loop are never started.
+// the signal loop are never run.
 func (r *Runner) Add(d daemon.Daemon) {
 	if d == nil {
 		r.logger.Warn("attempted to add a nil daemon")
@@ -121,12 +121,12 @@ func (r *Runner) handleSIGHUP() {
 	}
 }
 
-// Run starts all daemons sequentially, enters a signal-handling loop,
+// Run runs all daemons sequentially, enters a signal-handling loop,
 // and on SIGINT/SIGQUIT/SIGTERM (or a startup failure) performs concurrent
-// graceful shutdown of the started daemons. It returns nil on success, or
+// graceful shutdown of the running daemons. It returns nil on success, or
 // the startup or shutdown error, which the caller maps to an exit code.
 // Run is intended to be called once per Runner: a second call would
-// re-run d.Run() on already-started daemons. The runner trusts the
+// re-run d.Run() on already-running daemons. The runner trusts the
 // caller on this — a second call is not guarded.
 func (r *Runner) Run() error {
 	// signal.Notify is process-global state: the runtime binds the
@@ -139,27 +139,27 @@ func (r *Runner) Run() error {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM, syscall.SIGHUP)
 
-	// --- Start Daemons Sequentially ---
-	r.logger.Info("starting daemons sequentially...")
-	var startErr error
-	startedDaemons := make([]daemon.Daemon, 0, len(r.daemons))
+	// --- Run Daemons Sequentially ---
+	r.logger.Info("running daemons sequentially...")
+	var daemonRunErr error
+	runningDaemons := make([]daemon.Daemon, 0, len(r.daemons))
 	for _, d := range r.daemons {
-		r.logger.Info("starting daemon", "daemon_name", d.Name())
-		startErr = d.Run()
-		if startErr != nil {
-			r.logger.Error("failed to start daemon, initiating shutdown",
-				"daemon_name", d.Name(), "error", startErr)
+		r.logger.Info("running daemon", "daemon_name", d.Name())
+		daemonRunErr = d.Run()
+		if daemonRunErr != nil {
+			r.logger.Error("failed to run daemon, initiating shutdown",
+				"daemon_name", d.Name(), "error", daemonRunErr)
 			break
 		}
-		startedDaemons = append(startedDaemons, d)
-		r.logger.Info("daemon started successfully", "daemon_name", d.Name())
+		runningDaemons = append(runningDaemons, d)
+		r.logger.Info("daemon running successfully", "daemon_name", d.Name())
 	}
 
 	// TODO: Listener daemons may fail asynchronously after Run
 	// returns nil; async errors are not reported. See TODO.md.
 
-	// Signal loop — only entered if all daemons started successfully.
-	if startErr == nil {
+	// Signal loop — only entered if all daemons ran successfully.
+	if daemonRunErr == nil {
 		running := true
 		for running {
 			sig := <-sigChan
@@ -194,7 +194,7 @@ func (r *Runner) Run() error {
 	shutdownGroup.SetLimit(defaultErrGroupLimit)
 
 	r.logger.Info("stopping daemons...")
-	for _, d := range startedDaemons {
+	for _, d := range runningDaemons {
 		shutdownGroup.Go(func() error {
 			err := d.Stop(gracefulCtx)
 			if err != nil {
@@ -210,10 +210,10 @@ func (r *Runner) Run() error {
 	}
 
 	// Report the result to the caller, which maps a non-nil error to
-	// an exit code: startup failed or the shutdown process failed.
-	if startErr != nil || shutdownErr != nil {
+	// an exit code: run failed or the shutdown process failed.
+	if daemonRunErr != nil || shutdownErr != nil {
 		r.logger.Info("shutdown finished with errors.")
-		return errors.Join(startErr, shutdownErr)
+		return errors.Join(daemonRunErr, shutdownErr)
 	}
 	r.logger.Info("all systems stopped gracefully.")
 	return nil
