@@ -498,3 +498,102 @@ func TestRunner_SIGHUPNoReload(t *testing.T) {
 		t.Fatal("Run did not return")
 	}
 }
+
+// TestNewRunner_InvalidShutdownTimeout proves NewRunner rejects a
+// non-positive shutdown timeout with an error wrapping ErrRunner.
+func TestNewRunner_InvalidShutdownTimeout(t *testing.T) {
+	_, err := NewRunner(WithShutdownTimeout(0))
+	if !errors.Is(err, ErrRunner) {
+		t.Fatalf("NewRunner returned %v, want ErrRunner", err)
+	}
+}
+
+// TestNewRunner_NilLogger proves a nil logger falls back to
+// slog.Default() instead of being stored as nil.
+func TestNewRunner_NilLogger(t *testing.T) {
+	r, err := NewRunner(WithLogger(nil))
+	if err != nil {
+		t.Fatalf("NewRunner: %v", err)
+	}
+	if r.logger == nil {
+		t.Fatal("nil logger was not replaced with slog.Default()")
+	}
+}
+
+// TestAddDaemon_Nil proves Add(nil) does not panic: it logs a warning
+// and leaves the daemon list untouched.
+func TestAddDaemon_Nil(t *testing.T) {
+	r, err := NewRunner(WithLogger(discardLogger))
+	if err != nil {
+		t.Fatalf("NewRunner: %v", err)
+	}
+	r.Add(nil) // logs a warning, must not panic
+}
+
+// TestRunner_SIGHUPReloadError proves a failing reload function is
+// logged, not fatal: SIGHUP runs the reload (which returns an error),
+// the runner keeps running, and a later SIGINT shuts it down cleanly.
+func TestRunner_SIGHUPReloadError(t *testing.T) {
+	reloadErr := errors.New("reload failed")
+	reloadCalled := make(chan bool, 1)
+	reloadFunc := func() error {
+		reloadCalled <- true
+		return reloadErr
+	}
+
+	d1 := newTestDaemon("d1")
+
+	r, err := NewRunner(
+		WithLogger(discardLogger),
+		WithShutdownTimeout(200*time.Millisecond),
+		WithReloadFunc(reloadFunc),
+	)
+	if err != nil {
+		t.Fatalf("NewRunner: %v", err)
+	}
+	r.Add(d1)
+
+	runErrChan := make(chan error, 1)
+	go func() {
+		runErrChan <- r.Run()
+	}()
+
+	select {
+	case <-d1.runCalledChan:
+	case <-time.After(1 * time.Second):
+		t.Fatal("d1 was not started")
+	}
+
+	// The failing reload still runs: the reload function is called and
+	// the runner keeps running instead of shutting down.
+	sendSignal(t, syscall.SIGHUP)
+
+	select {
+	case <-reloadCalled:
+	case <-time.After(1 * time.Second):
+		t.Fatal("reload function was not called")
+	}
+	select {
+	case err := <-runErrChan:
+		t.Fatalf("Run returned after SIGHUP: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// SIGINT for a clean shutdown.
+	sendSignal(t, syscall.SIGINT)
+
+	select {
+	case <-d1.stopCalledChan:
+	case <-time.After(1 * time.Second):
+		t.Fatal("d1 was not stopped")
+	}
+
+	select {
+	case runErr := <-runErrChan:
+		if runErr != nil {
+			t.Fatalf("Run returned error: %v", runErr)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("Run did not return")
+	}
+}
