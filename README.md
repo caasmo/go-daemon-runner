@@ -2,9 +2,9 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/caasmo/go-daemon-runner)](https://pkg.go.dev/github.com/caasmo/go-daemon-runner)
 
-Compose your program from background goroutines — get start, signals, and graceful shutdown for free.
+Compose your program from background goroutines — go-daemon-runner provides the process lifecycle around them: sequential start, signal handling, and concurrent, deadline-bounded graceful shutdown.
 
-go-daemon-runner is for Go programs built from background goroutines. Your program is a set of components that run for its lifetime — periodic backups, schedulers, log aggregation, replication — each one a goroutine with a start/stop contract. The library handles the process around them: start in order, wait for SIGINT/SIGTERM, shut everything down gracefully within a deadline, reload on SIGHUP.
+go-daemon-runner is for Go programs built from background goroutines. Your program is a set of components that run for its lifetime — periodic backups, schedulers, log aggregation, replication — each one a goroutine with a start/stop contract. The runner starts them sequentially in registration order, waits for SIGINT/SIGQUIT/SIGTERM, shuts them down concurrently within a configurable deadline (default 15s), and runs your reload hook on SIGHUP — the process keeps running, no restart.
 
 # Content
 
@@ -24,10 +24,11 @@ go-daemon-runner is for Go programs built from background goroutines. Your progr
 
 ## Features
 
-- **A clean exit.** On SIGTERM/SIGINT every background task is stopped and waited for. No leaked goroutines, no hanging process.
-- **A shutdown that can't hang.** Every stop is bounded by a deadline (default 15s); a task that doesn't stop in time is reported, not waited on forever.
-- **Failure containment at startup.** If a task fails to start, the ones already running are stopped and the error is returned. You never get a half-running program.
-- **Reload without restart.** SIGHUP runs your reload hook — `systemctl reload` works, tasks keep running.
+- **Graceful shutdown on termination signals.** On SIGINT, SIGQUIT, or SIGTERM the runner stops every started daemon concurrently and waits for each to complete before `Run` returns. No daemon is left running, no goroutine leaked, no process left hanging.
+- **Deadline-bounded shutdown.** Shutdown is bounded by a configurable deadline (default 15s, `WithShutdownTimeout`). A daemon that fails to stop in time is reported — `Run` returns its error — instead of being waited on indefinitely.
+- **Rollback on startup failure.** Daemons start sequentially in registration order. If one fails to start, the runner stops the daemons already running and `Run` returns the startup error: the process never continues half-started.
+- **Reload on SIGHUP without restart.** SIGHUP invokes the hook set via `WithReloadFunc` while all daemons keep running — `systemctl reload` works. With no hook configured, SIGHUP is logged and ignored.
+- **Errors surfaced to the caller.** `Run` returns startup and shutdown errors (joined), so the caller can map them to exit codes instead of guessing from logs.
 
 ## Installation
 
