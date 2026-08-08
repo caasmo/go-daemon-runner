@@ -39,7 +39,7 @@ A complete runnable example of the library — three daemons covering the three 
 go run ./cmd/example
 ```
 
-The backup daemon ticks every 2 seconds, the queue daemon processes seeded jobs through a worker, and the service daemon blocks on a context-aware store. While it runs, `kill -HUP <pid>` toggles the backup pause flag in place (visible on the next tick), and SIGINT/SIGTERM shuts everything down gracefully.
+The example is self-commented: each daemon file documents its simulated workload, blocking pattern, and the README rules it follows.
 
 ## Writing daemons
 
