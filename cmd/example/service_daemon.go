@@ -25,8 +25,8 @@ import (
 // daemon's goroutine only does cleanup work, so Stop's wait on
 // ShutdownDone is naturally bounded by the library's shutdown.
 type ServiceDaemon struct {
-	daemon.Base
-	store *Store // context-aware service
+	daemon.Base        // README rule 4: Stop inherited from Base, waits on ShutdownDone
+	store       *Store // context-aware service
 }
 
 func NewServiceDaemon(store *Store, logger *slog.Logger) *ServiceDaemon {
@@ -37,13 +37,13 @@ func NewServiceDaemon(store *Store, logger *slog.Logger) *ServiceDaemon {
 }
 
 func (d *ServiceDaemon) Run() error {
-	go func() {
-		defer close(d.ShutdownDone) // first defer: signal completion after all cleanup
+	go func() { // README rule 1: Run spawns the background goroutine
+		defer close(d.ShutdownDone) // README rule 3: first defer, signals completion to Stop
 
 		// Sync is a library call: it runs the store's loop in its
 		// own goroutine, observing d.Ctx (cancelled by Stop()), and
 		// returns once the loop has exited.
-		if err := d.store.Sync(d.Ctx); err != nil {
+		if err := d.store.Sync(d.Ctx); err != nil { // README rule 2: blocking point — a context-aware library call
 			d.Logger.Error("service failed", "error", err)
 			return // a failed service is not flushed
 		}

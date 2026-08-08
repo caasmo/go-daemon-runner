@@ -22,9 +22,9 @@ import (
 // worker has finished its in-flight job — a graceful drain of the
 // queue.
 type QueueDaemon struct {
-	daemon.Base
-	jobs chan string    // incoming jobs
-	wg   sync.WaitGroup // joins the worker before shutdown completes
+	daemon.Base                // README rule 4: Stop inherited from Base, waits on ShutdownDone
+	jobs        chan string    // incoming jobs
+	wg          sync.WaitGroup // joins the worker before shutdown completes
 }
 
 func NewQueueDaemon(logger *slog.Logger) *QueueDaemon {
@@ -35,12 +35,12 @@ func NewQueueDaemon(logger *slog.Logger) *QueueDaemon {
 }
 
 func (d *QueueDaemon) Run() error {
-	go func() {
-		defer close(d.ShutdownDone) // first defer: signal completion after all cleanup
+	go func() { // README rule 1: Run spawns the background goroutine
+		defer close(d.ShutdownDone) // README rule 3: first defer, signals completion to Stop
 
 		d.wg.Add(1)
 		go d.worker()  // the worker selects on d.Ctx.Done() itself
-		<-d.Ctx.Done() // cancelled by Stop(), nothing else to do
+		<-d.Ctx.Done() // README rule 2: blocking point; Stop cancels Ctx to unblock it
 		d.wg.Wait()    // Stop() unblocks only once the worker has finished
 	}()
 	return nil

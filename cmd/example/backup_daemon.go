@@ -24,9 +24,9 @@ import (
 // defer executes last), so Stop only returns once the ticker is
 // stopped and the goroutine has fully exited.
 type BackupDaemon struct {
-	daemon.Base
-	interval time.Duration
-	paused   atomic.Bool // reloaded in place via SIGHUP
+	daemon.Base // README rule 4: Stop inherited from Base, waits on ShutdownDone
+	interval    time.Duration
+	paused      atomic.Bool // reloaded in place via SIGHUP
 }
 
 func NewBackupDaemon(interval time.Duration, logger *slog.Logger) *BackupDaemon {
@@ -37,15 +37,15 @@ func NewBackupDaemon(interval time.Duration, logger *slog.Logger) *BackupDaemon 
 }
 
 func (d *BackupDaemon) Run() error {
-	go func() {
-		defer close(d.ShutdownDone) // first defer: signal completion after all cleanup
+	go func() { // README rule 1: Run spawns the background goroutine
+		defer close(d.ShutdownDone) // README rule 3: first defer, signals completion to Stop
 
 		ticker := time.NewTicker(d.interval)
 		defer ticker.Stop()
 
 		for {
 			select {
-			case <-d.Ctx.Done(): // cancelled by Stop(), exit the loop
+			case <-d.Ctx.Done(): // README rule 2: blocking point; Stop cancels Ctx to unblock it
 				return
 			case <-ticker.C:
 				// paused is toggled in place by the reloadFunc wired

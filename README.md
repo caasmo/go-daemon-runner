@@ -8,6 +8,7 @@ Add and control the lifecycle of goroutine-based daemons.
 
 - [Installation](#installation)
 - [The two packages](#the-two-packages)
+- [Runnable example](#runnable-example)
 - [Writing daemons](#writing-daemons)
   - [Rules](#rules)
   - [Example](#example)
@@ -29,6 +30,16 @@ go get github.com/caasmo/go-daemon-runner
 - `run` (`github.com/caasmo/go-daemon-runner/run`) — the [`Runner`](run/run.go) dispatcher: sequential start, signal handling, and concurrent graceful shutdown.
 
 Usage pattern: `daemon` to build daemons, `run` to run them.
+
+## Runnable example
+
+A complete runnable example of the library — three daemons covering the three blocking patterns plus the reload hook — lives in [`cmd/example`](cmd/example/main.go):
+
+```
+go run ./cmd/example
+```
+
+The backup daemon ticks every 2 seconds, the queue daemon processes seeded jobs through a worker, and the service daemon blocks on a context-aware store. While it runs, `kill -HUP <pid>` toggles the backup pause flag in place (visible on the next tick), and SIGINT/SIGTERM shuts everything down gracefully.
 
 ## Writing daemons
 
@@ -144,14 +155,6 @@ if err := r.Run(); err != nil {
 	panic(err) // startup failed or shutdown had errors
 }
 ```
-
-A complete runnable version of this wiring — three daemons covering the three blocking patterns plus the reload hook — lives in [`cmd/example`](cmd/example/main.go):
-
-```
-go run ./cmd/example
-```
-
-The backup daemon ticks every 2 seconds, the queue daemon processes seeded jobs through a worker, and the service daemon blocks on a context-aware store. While it runs, `kill -HUP <pid>` toggles the backup pause flag in place (visible on the next tick), and SIGINT/SIGTERM shuts everything down gracefully.
 
 ### Options
 
