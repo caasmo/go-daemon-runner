@@ -1,10 +1,13 @@
 # go-daemon-runner
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/caasmo/go-daemon-runner)](https://pkg.go.dev/github.com/caasmo/go-daemon-runner)
-[![Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/caasmo/go-daemon-runner/master/.github/badges/coverage.json)](https://github.com/caasmo/go-daemon-runner/actions/workflows/test.yml)
+[![Test](https://github.com/caasmo/go-daemon-runner/actions/workflows/test.yml/badge.svg)](https://github.com/caasmo/go-daemon-runner/actions/workflows/test.yml)
 [![golangci-lint](https://github.com/caasmo/go-daemon-runner/actions/workflows/golangci-lint.yml/badge.svg)](https://github.com/caasmo/go-daemon-runner/actions/workflows/golangci-lint.yml)
+[![Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/caasmo/go-daemon-runner/master/.github/badges/coverage.json)](https://github.com/caasmo/go-daemon-runner/actions/workflows/test.yml)
 [![sloc](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/caasmo/go-daemon-runner/master/.github/badges/sloc.json)](https://github.com/caasmo/go-daemon-runner/actions/workflows/sloc.yml)
 [![deps](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/caasmo/go-daemon-runner/master/.github/badges/deps.json)](https://github.com/caasmo/go-daemon-runner/actions/workflows/dependencies.yml)
+[![GitHub Release](https://img.shields.io/github/v/release/caasmo/go-daemon-runner?style=flat)]()
+[![Built Go](https://img.shields.io/badge/built_with-Go-00ADD8.svg?style=flat)]()
 
 Compose your program from background goroutines — go-daemon-runner provides the process lifecycle around them: sequential start, signal handling, and concurrent, deadline-bounded graceful shutdown.
 
