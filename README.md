@@ -91,10 +91,10 @@ func (d *SimpleDaemon) Run() error { // rule 1: Run spawns the background gorout
 	return nil
 }
 
-func (d *SimpleDaemon) Stop(ctx context.Context) error { // rule 4: wait for completion
+func (d *SimpleDaemon) Stop(ctx context.Context) error {
 	d.cancel()
 	select {
-	case <-d.done:
+	case <-d.done: // rule 4: wait for the goroutine's completion signal
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
