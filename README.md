@@ -4,6 +4,19 @@
 
 Add and control the lifecycle of goroutine-based daemons.
 
+# Content
+
+- [Installation](#installation)
+- [The two packages](#the-two-packages)
+- [Writing daemons](#writing-daemons)
+  - [Rules](#rules)
+  - [Example](#example)
+  - [Rule helper: `Base`](#rule-helper-base)
+- [Wiring daemons](#wiring-daemons)
+  - [Options](#options)
+  - [Signals](#signals)
+  - [The reload hook](#the-reload-hook)
+
 ## Installation
 
 ```
@@ -17,20 +30,6 @@ go get github.com/caasmo/go-daemon-runner
 
 Usage pattern: `daemon` to build daemons, `run` to run them.
 
-## Usage
-
-```go
-r, err := run.NewRunner()
-if err != nil {
-	panic(err)
-}
-r.Add(backupDaemon) // any daemon.Daemon
-r.Add(schedulerDaemon)
-if err := r.Run(); err != nil {
-	panic(err) // startup failed or shutdown had errors
-}
-```
-
 ## Writing daemons
 
 A daemon is an object that satisfies the `Daemon` interface:
@@ -43,102 +42,144 @@ type Daemon interface {
 }
 ```
 
-The interface alone is not enough. The runner calls [`Run`](daemon/daemon.go) on each daemon at startup, sequentially, and [`Stop`](daemon/daemon.go) at shutdown — `ctx` carries the graceful-shutdown deadline. Your object must additionally follow these rules:
+The interface alone is not enough. The runner calls [`Run`](daemon/daemon.go) at startup, sequentially, and [`Stop`](daemon/daemon.go) at shutdown — `ctx` carries the graceful-shutdown deadline. Your object must additionally follow these rules:
 
-- `Run` — called by the runner to start the daemon. It spawns the background goroutine that does the daemon's work and returns an error if startup fails. It may return `nil` immediately once the goroutine is running, or block until startup is confirmed.
-- The goroutine must reach a blocking point that unblocks when shutdown is signaled.
-- `Stop` — called by the runner during shutdown. It must signal the daemon to shut down and wait until the goroutine signals completion, or until the context deadline expires, whichever comes first.
+### Rules
 
-`Base` implements one of these rules and provides the plumbing for the other two. It implements `Stop` — cancelling [`Ctx`](daemon/daemon.go) and waiting on [`ShutdownDone`](daemon/daemon.go) or the deadline — and provides the fields your `Run` needs to follow the rest:
+1. **`Run` must spawn the daemon's background goroutine.** It must return an error if startup fails. It may return `nil` immediately once the goroutine is running, or block until startup is confirmed.
+
+2. **The goroutine must reach a blocking point.** It must block until shutdown is signaled — a select on `Ctx.Done()`, a bare `<-Ctx.Done()`, or a context-aware library call. A goroutine that never blocks would keep the process alive.
+
+3. **The goroutine must signal completion of shutdown.** Register `defer close(ShutdownDone)` as its **first** defer — defers run last-in-first-out, so it executes after every other deferred cleanup and `Stop` unblocks only once all cleanup has completed.
+
+4. **`Stop` must wait for completion.** Signal the daemon to shut down and wait until the goroutine signals completion, or until the context deadline expires, whichever comes first.
+
+### Example
+
+The simplest daemon that satisfies all four rules — every rule is visible in the code:
+
+```go
+type SimpleDaemon struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	done   chan struct{} // closed by the goroutine to signal completion
+}
+
+func NewSimpleDaemon() *SimpleDaemon {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &SimpleDaemon{ctx: ctx, cancel: cancel, done: make(chan struct{})}
+}
+
+func (d *SimpleDaemon) Name() string { return "SimpleDaemon" }
+
+func (d *SimpleDaemon) Run() error { // rule 1: Run spawns the background goroutine
+	go func() {
+		defer close(d.done) // rule 3: signal completion, after all cleanup
+		<-d.ctx.Done()      // rule 2: block until shutdown is signaled
+	}()
+	return nil
+}
+
+func (d *SimpleDaemon) Stop(ctx context.Context) error { // rule 4: wait for completion
+	d.cancel()
+	select {
+	case <-d.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+```
+
+### Rule helper: `Base`
+
+The example above hand-writes `Stop`, the context, and the completion channel — the boilerplate every daemon needs. [`Base`](daemon/daemon.go) reduces that boilerplate. `Base` alone does not satisfy the interface: it has no `Run` — it is a helper, not a daemon, and you can implement the interface directly without it. It implements `Stop` (rule 4) — cancelling `Ctx` and waiting on `ShutdownDone` or the deadline — and provides the fields `Run` needs for the other rules:
 
 - [`Ctx`](daemon/daemon.go) — cancelled by `Stop` to signal the goroutine to exit.
 - [`Cancel`](daemon/daemon.go) — the cancel function `Stop` calls.
 - [`ShutdownDone`](daemon/daemon.go) — the goroutine closes it to signal completion; `Stop` waits on it.
 - [`Logger`](daemon/daemon.go) — used by `Stop` for lifecycle logging.
 
-When using `Base`, the goroutine spawned by `Run` registers `defer close(ShutdownDone)` as its **first** defer — defers run last-in-first-out, so it executes after every other deferred cleanup and `Stop` unblocks only once all cleanup has completed. It blocks on `Ctx` being cancelled (triggered by `Stop` via `Cancel`) — a select on `Ctx.Done()`, a bare `<-Ctx.Done()`, or a context-aware library call.
+The same daemon with `Base`:
 
-`Base` alone does not satisfy the interface: it has no `Run`. The interface can also be implemented directly without `Base`.
 ```go
-type BackupDaemon struct {
-	daemon.Base
-	interval time.Duration // how often to run a backup
+type SimpleDaemon struct {
+	daemon.Base // rule 4: Stop given as implemented; provides Ctx (rule 2) and ShutdownDone (rule 3)
 }
 
-func NewBackupDaemon(interval time.Duration, logger *slog.Logger) *BackupDaemon {
-	return &BackupDaemon{
-		Base:     daemon.NewBase("BackupDaemon", logger),
-		interval: interval,
+func NewSimpleDaemon(logger *slog.Logger) *SimpleDaemon {
+	return &SimpleDaemon{
+		Base: daemon.NewBase("SimpleDaemon", logger),
 	}
 }
 
-func (d *BackupDaemon) Run() error {
+func (d *SimpleDaemon) Run() error { // rule 1: Run spawns the background goroutine
 	go func() {
-		defer close(d.ShutdownDone) // must be present to signal shutdown to Stop()
-
-		ticker := time.NewTicker(d.interval)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-d.Ctx.Done(): // cancelled by Stop(), exit the loop
-				return
-			case <-ticker.C:
-				d.doWork()
-			}
-		}
+		defer close(d.ShutdownDone) // rule 3: signal completion, after all cleanup
+		<-d.Ctx.Done()              // rule 2: block until shutdown is signaled
 	}()
 	return nil
 }
 ```
 
+With `Base` you only write `Run`: the context and completion-channel fields, the constructor plumbing, `Name`, and `Stop` (rule 4) are inherited — `Name` is trivial anyway. What remains the daemon's job: `Run` spawning the goroutine (rule 1), reaching the blocking point (rule 2), and the goroutine signaling completion (rule 3).
+
 Real daemons following these rules: restinpieces' [log daemon](https://github.com/caasmo/restinpieces/blob/master/log/daemon.go), [scheduler](https://github.com/caasmo/restinpieces/blob/master/queue/scheduler/scheduler.go), and the [litestream daemon](https://github.com/caasmo/restinpieces-litestream/blob/master/litestream.go).
 
-## Runner options
+## Wiring daemons
 
-`NewRunner` applies defaults — `slog.Default()` logger, 15-second graceful-shutdown timeout, SIGHUP ignored — overridable with:
+The [`Runner`](run/run.go) wires daemons into a process lifecycle: it starts them sequentially, then waits for a termination signal, then shuts the started daemons down concurrently within a graceful deadline.
 
-- `WithLogger(l *slog.Logger)`
-- `WithShutdownTimeout(d time.Duration)`
-- `WithReloadFunc(fn func() error)`
+```go
+r, err := run.NewRunner(
+	run.WithLogger(logger),
+	run.WithShutdownTimeout(30 * time.Second),
+)
+if err != nil {
+	panic(err)
+}
+r.Add(backupDaemon) // any daemon.Daemon
+r.Add(schedulerDaemon)
+if err := r.Run(); err != nil {
+	panic(err) // startup failed or shutdown had errors
+}
+```
 
-A non-positive shutdown timeout makes `NewRunner` return an error wrapping `ErrRunner`, checkable with `errors.Is`. The shutdown phase caps concurrent `Stop` calls at 32 (a fixed internal constant, not an option).
+### Options
 
-## Signals
+- [`WithLogger(l *slog.Logger)`](run/run.go) — the logger for lifecycle logging. Default: `slog.Default()`; a nil logger falls back to it.
+- [`WithShutdownTimeout(d time.Duration)`](run/run.go) — the deadline bounding the graceful shutdown. Default: 15 seconds; a non-positive duration makes `NewRunner` return an error wrapping [`ErrRunner`](run/run.go), checkable with `errors.Is`.
+- [`WithReloadFunc(fn func() error)`](run/run.go) — the function run on SIGHUP. Default: none — SIGHUP is logged and ignored.
+
+### Signals
+
+The runner supports the following signals — SIGHUP is the only one with a function, a single reload hook:
 
 | Signal | Action |
 | --- | --- |
 | SIGINT, SIGQUIT, SIGTERM | Graceful shutdown of all daemons |
-| SIGHUP | Reload hook (next section); ignored if none configured |
+| SIGHUP | Reload hook (below); ignored if none configured |
 
 Under systemd: `systemctl stop` sends SIGTERM, `systemctl reload` sends SIGHUP via `ExecReload=/bin/kill -HUP $MAINPID`.
 
-## The reload hook
+### The reload hook
 
-SIGHUP does not shut the runner down — it runs the `reloadFunc` set via `WithReloadFunc` and the signal loop keeps running. The systemd flow:
+SIGHUP does not shut the runner down — it runs the `reloadFunc` set via `WithReloadFunc` and the signal loop keeps running:
 
 `systemctl reload` → `ExecReload=/bin/kill -HUP $MAINPID` → SIGHUP → `reloadFunc`
 
-`reloadFunc` is a closure that captures whatever state the reload needs — the daemon itself, or the config provider the daemon reads from — and rebuilds that state in place. The daemon instance is never swapped: the runner's daemon list is fixed, and the rebuilt state takes effect inside the running daemon's next iteration.
+`reloadFunc` is a closure that captures whatever state the reload needs and rebuilds it in place; the daemon instance is never swapped, so the rebuilt state takes effect on its next iteration. A failed reload is logged and the runner keeps running. Keep `reloadFunc` fast: it runs synchronously inside the signal loop, and termination signals arriving while it blocks can be dropped.
 
-The runner never interprets the reload error — it logs it and keeps running; a failed reload must not take the process down. Keep `reloadFunc` fast: it runs synchronously inside the signal loop, and termination signals arriving while it blocks can be dropped.
-
-The real restinpieces path is `handleSIGHUP` → `reloadFunc` → `config.Reload` ([reload.go](https://github.com/caasmo/restinpieces/blob/master/config/reload.go)), wired up with [restinpieces.service](https://github.com/caasmo/restinpieces/blob/master/restinpieces.service). Reduced to the essential steps, with a scheduler daemon that reads the config provider on every tick:
+Wired into the runner with the example above:
 
 ```go
+// pseudo-code: rebuild the daemon's state in place
 reloadFunc := func() error {
-	bytes, _, err := store.Get(scopeApplication, 0)
+	cfg, err := fetchConfig()
 	if err != nil {
-		return fmt.Errorf("failed to fetch latest config: %w", err)
+		return err
 	}
-	newCfg := &Config{}
-	if err := toml.Unmarshal(bytes, newCfg); err != nil {
-		return fmt.Errorf("failed to unmarshal new config: %w", err)
-	}
-	if err := newCfg.Validate(); err != nil {
-		return fmt.Errorf("new config validation failed: %w", err)
-	}
-	provider.Update(newCfg) // in-place rebuild — takes effect next tick
+	schedulerDaemon.Update(cfg) // takes effect on the next tick
 	return nil
 }
 
@@ -146,6 +187,7 @@ r, err := run.NewRunner(run.WithReloadFunc(reloadFunc))
 if err != nil {
 	panic(err)
 }
+r.Add(backupDaemon)
 r.Add(schedulerDaemon)
 if err := r.Run(); err != nil {
 	panic(err)
