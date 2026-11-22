@@ -20,16 +20,16 @@ import (
 // before signaling completion.
 //
 // Blocking pattern 3 — delegation to a context-aware call: the
-// goroutine contains no blocking point of its own construction. It
-// blocks on engine.Replicate, a library call that runs the
+// context-aware call returns when Stop signals shutdown. It blocks
+// on engine.Replicate, a library call that runs the
 // replication loop in its own goroutine observing d.Ctx and
 // returns once cancelled. The daemon's goroutine only does cleanup
 // work, so Stop's wait on ShutdownDone is naturally bounded by the
 // engine's shutdown.
 //
-// README rules: 1 (Run spawns the goroutine), 2 (the blocking point
-// is the context-aware engine.Replicate call), 3 (first defer
-// closes ShutdownDone), and 4 via the Stop inherited from Base.
+// README rules: 1 (Run spawns the goroutine), 2 (listening for
+// Stop's shutdown signal), 3 (first defer closes ShutdownDone), and 4
+// via the Stop inherited from Base.
 type ContinuousReplicaDaemon struct {
 	daemon.Base                // README rule 4: Stop inherited from Base, waits on ShutdownDone
 	engine      *ReplicaEngine // the context-aware replication library
@@ -57,7 +57,7 @@ func (d *ContinuousReplicaDaemon) Run() error {
 		// Replicate is a library call: it runs the engine's loop in
 		// its own goroutine, observing d.Ctx (cancelled by Stop()),
 		// and returns once the loop has exited.
-		err := d.engine.Replicate(d.Ctx) // README rule 2: blocking point — a context-aware library call
+		err := d.engine.Replicate(d.Ctx) // README rule 2: a context-aware call that returns when Stop cancels Ctx
 		if err != nil {
 			d.Logger.Error("replication failed", "error", err)
 			return

@@ -19,8 +19,8 @@ import (
 // shutdown. The deferred close(ShutdownDone) runs after the ticker
 // stops.
 //
-// README rules: 1 (Run spawns the goroutine), 2 (the blocking point
-// is the select), 3 (first defer closes ShutdownDone), and 4 via the
+// README rules: 1 (Run spawns the goroutine), 2 (listening for
+// Stop's shutdown signal), 3 (first defer closes ShutdownDone), and 4 via the
 // Stop inherited from Base.
 type LogProducerDaemon struct {
 	daemon.Base // README rule 4: Stop inherited from Base, waits on ShutdownDone
@@ -49,7 +49,7 @@ func (d *LogProducerDaemon) Run() error {
 
 		n := 0
 		for {
-			select { // README rule 2: blocking point
+			select { // README rule 2: listen for Stop's shutdown signal and exit
 			case <-ticker.C:
 				n++
 				msg := fmt.Sprintf("message %d", n)

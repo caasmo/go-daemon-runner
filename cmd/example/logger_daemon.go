@@ -17,8 +17,8 @@ import (
 // drains and exits. The deferred close(ShutdownDone) runs after the
 // drain, so Stop only returns once the channel is empty.
 //
-// README rules: 1 (Run spawns the goroutine), 2 (the blocking point
-// is the select), 3 (first defer closes ShutdownDone), and 4 via the
+// README rules: 1 (Run spawns the goroutine), 2 (listening for
+// Stop's shutdown signal), 3 (first defer closes ShutdownDone), and 4 via the
 // Stop inherited from Base.
 type LoggerDaemon struct {
 	daemon.Base // README rule 4: Stop inherited from Base, waits on ShutdownDone
@@ -48,7 +48,7 @@ func (d *LoggerDaemon) Run() error {
 		defer close(d.ShutdownDone) // README rule 3: first defer, signals completion to Stop
 
 		for {
-			select { // README rule 2: blocking point
+			select { // README rule 2: listen for Stop's shutdown signal and exit
 			case msg := <-d.messages:
 				d.Logger.Info("received message", "message", msg)
 			case <-d.Ctx.Done():

@@ -52,13 +52,13 @@ Usage pattern: `daemon` to build daemons, `run` to run them.
 
 ## Runnable example
 
-A complete runnable example of the library — daemons covering the blocking patterns of [rule 2](#rules), including a communicating pair (a producer sending messages to a logger that owns the channel), plus the reload hook — lives in [`cmd/example`](cmd/example/main.go):
+A complete runnable example of the library — daemons showing how they listen for the shutdown signal sent by `Stop` (rule 2), including a communicating pair (a producer sending messages to a logger that owns the channel), plus the reload hook — lives in [`cmd/example`](cmd/example/main.go):
 
 ```
 go run ./cmd/example
 ```
 
-The example is self-commented: each daemon file documents its simulated workload, blocking pattern, and the README rules it follows.
+The example is self-commented: each daemon file documents its simulated workload, how it listens for `Stop`'s shutdown signal, and the README rules it follows.
 
 ## Writing daemons
 
@@ -78,7 +78,7 @@ The interface alone is not enough. The runner calls [`Run`](daemon/daemon.go) at
 
 1. **`Run` must spawn the daemon's background goroutine.** It must return an error if startup fails. It may return `nil` immediately once the goroutine is running, or block until startup is confirmed.
 
-2. **The goroutine must reach a blocking point.** It must block until shutdown is signaled, among others:
+2. **The goroutine must listen for the shutdown signal sent by its `Stop` and exit when it arrives.** It must block until shutdown is signaled, among others:
 
    1. A select on `Ctx.Done()`
    2. A bare `<-Ctx.Done()`
@@ -158,7 +158,7 @@ func (d *SimpleDaemon) Run() error { // rule 1: Run spawns the background gorout
 }
 ```
 
-With `Base` you only write `Run`: the context and completion-channel fields, the constructor plumbing, `Name`, and `Stop` (rule 4) are inherited — `Name` is trivial anyway. What remains the daemon's job: `Run` spawning the goroutine (rule 1), reaching the blocking point (rule 2), and the goroutine signaling completion (rule 3).
+With `Base`, `Run` listens on `Ctx` for the shutdown signal and closes `ShutdownDone` when the goroutine exits.
 
 Real daemons following these rules: restinpieces' [log daemon](https://github.com/caasmo/restinpieces/blob/master/log/daemon.go), [scheduler](https://github.com/caasmo/restinpieces/blob/master/queue/scheduler/scheduler.go), and the [litestream daemon](https://github.com/caasmo/restinpieces-litestream/blob/master/litestream.go).
 

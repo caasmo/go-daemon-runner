@@ -18,11 +18,10 @@ import (
 // unpauses it.
 //
 // Blocking pattern 1 — a select on Ctx.Done() and a ticker: the
-// goroutine's only blocking point is the select, and the Ctx.Done()
-// case unblocks it when Stop cancels the context. The deferred
-// close(ShutdownDone) runs after every other cleanup (the first
-// defer executes last), so Stop only returns once the ticker is
-// stopped and the goroutine has fully exited.
+// goroutine listens for Stop's shutdown signal and exits when it
+// arrives. The deferred close(ShutdownDone) runs after every other
+// cleanup (the first defer executes last), so Stop only returns once
+// the ticker is stopped and the goroutine has fully exited.
 type PeriodicBackupDaemon struct {
 	daemon.Base // README rule 4: Stop inherited from Base, waits on ShutdownDone
 	interval    time.Duration
@@ -50,7 +49,7 @@ func (d *PeriodicBackupDaemon) Run() error {
 
 		for {
 			select {
-			case <-d.Ctx.Done(): // README rule 2: blocking point; Stop cancels Ctx to unblock it
+			case <-d.Ctx.Done(): // README rule 2: listen for Stop's shutdown signal and exit
 				return
 			case <-ticker.C:
 				// The reload hook in main.go flips the shared flag

@@ -20,8 +20,8 @@ import (
 // with g.Wait() before signaling completion — a graceful drain of
 // the queue.
 //
-// README rules: 1 (Run spawns the goroutine), 2 (the blocking point
-// is the bare <-Ctx.Done()), 3 (first defer closes ShutdownDone),
+// README rules: 1 (Run spawns the goroutine), 2 (listening for
+// Stop's shutdown signal), 3 (first defer closes ShutdownDone),
 // and 4 via the Stop inherited from Base.
 type QueueDaemon struct {
 	daemon.Base             // README rule 4: Stop inherited from Base, waits on ShutdownDone
@@ -58,7 +58,7 @@ func (d *QueueDaemon) Run() error {
 
 		for {
 			select {
-			case <-d.Ctx.Done(): // README rule 2: blocking point; Stop cancels Ctx to unblock it
+			case <-d.Ctx.Done(): // README rule 2: listen for Stop's shutdown signal and exit
 				// Graceful drain: join the in-flight jobs before
 				// signaling completion to Stop; a failed job is
 				// logged, not fatal.
