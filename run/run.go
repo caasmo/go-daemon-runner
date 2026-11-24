@@ -1,5 +1,6 @@
 // Package run provides a Runner that manages the lifecycle of daemons:
-// sequential start, signal handling, and concurrent graceful shutdown.
+// sequential start, signal handling (termination and SIGHUP reload),
+// and concurrent graceful shutdown.
 package run
 
 import (
@@ -17,19 +18,24 @@ import (
 )
 
 // Runner manages the lifecycle of a collection of daemons:
-// sequential start, signal-driven main loop, and concurrent
-// graceful shutdown via errgroup.
+// sequential start, signal-driven main loop (termination and SIGHUP
+// reload), and concurrent graceful shutdown via errgroup.
 type Runner struct {
 	daemons         []daemon.Daemon
 	logger          *slog.Logger
 	shutdownTimeout time.Duration
-	reloadFunc      func() error
 }
 
 // defaultShutdownTimeout bounds the graceful shutdown phase when
 // WithShutdownTimeout is not provided; mirrors restinpieces'
 // ShutdownGracefulTimeout default of 15s.
 const defaultShutdownTimeout = 15 * time.Second
+
+// defaultReloadTimeout bounds the reload phase started by SIGHUP.
+// The runner passes one deadline for the whole SIGHUP pass; every
+// reload in that pass shares it. A reload that ignores the deadline
+// blocks the signal loop.
+const defaultReloadTimeout = 15 * time.Second
 
 // defaultErrGroupLimit bounds the number of daemons stopped
 // concurrently; with many daemons it prevents a closing storm of
@@ -61,19 +67,11 @@ func WithShutdownTimeout(d time.Duration) Option {
 	}
 }
 
-// WithReloadFunc sets the function called on SIGHUP; without it,
-// SIGHUP is logged and ignored.
-func WithReloadFunc(fn func() error) Option {
-	return func(r *Runner) {
-		r.reloadFunc = fn
-	}
-}
-
 // NewRunner creates a Runner with default settings: slog.Default()
-// logger, 15-second shutdown timeout, no reload function. Customize
-// with WithLogger, WithShutdownTimeout, and WithReloadFunc. It
-// returns an error wrapping ErrRunner when a configured option
-// value is invalid, e.g. a non-positive shutdown timeout.
+// logger and a 15-second shutdown timeout. Customize with WithLogger
+// and WithShutdownTimeout. It returns an error wrapping ErrRunner
+// when a configured option value is invalid, e.g. a non-positive
+// shutdown timeout.
 func NewRunner(opts ...Option) (*Runner, error) {
 	r := &Runner{
 		logger:          slog.Default(),
@@ -104,30 +102,37 @@ func (r *Runner) Add(d daemon.Daemon) {
 	r.daemons = append(r.daemons, d)
 }
 
-// handleSIGHUP handles the SIGHUP signal, which carries reload
-// semantics: it runs the configured reloadFunc and logs the outcome;
-// without one, SIGHUP is logged and ignored.
-func (r *Runner) handleSIGHUP() {
-	if r.reloadFunc == nil {
-		r.logger.Info("received SIGHUP signal but no reload function configured")
-		return
-	}
+// handleSIGHUP asks every daemon that implements daemon.Reloader to
+// reload. Daemons without that capability are skipped. Reloads run
+// in registration order and are serialized by the signal loop: a
+// second SIGHUP waits until the first handleSIGHUP returns.
+func (r *Runner) handleSIGHUP(ctx context.Context) {
 	r.logger.Info("received SIGHUP signal - attempting reload")
-	err := r.reloadFunc()
-	if err != nil {
-		r.logger.Error("reload failed", "error", err)
-	} else {
-		r.logger.Info("reload successful")
+
+	for _, d := range r.daemons {
+		reloader, ok := d.(daemon.Reloader)
+		if !ok {
+			continue
+		}
+
+		err := reloader.Reload(ctx)
+		if err != nil {
+			r.logger.Error("reload failed", "daemon_name", d.Name(), "error", err)
+			continue
+		}
+
+		r.logger.Info("reload successful", "daemon_name", d.Name())
 	}
 }
 
 // Run runs all daemons sequentially, enters a signal-handling loop,
-// and on SIGINT/SIGQUIT/SIGTERM (or a startup failure) performs concurrent
-// graceful shutdown of the running daemons. It returns nil on success, or
-// the startup or shutdown error, which the caller maps to an exit code.
-// Run is intended to be called once per Runner: a second call would
-// re-run d.Run() on already-running daemons. The runner trusts the
-// caller on this — a second call is not guarded.
+// and on SIGINT/SIGQUIT/SIGTERM (or a startup failure) performs
+// concurrent graceful shutdown of the running daemons. SIGHUP asks
+// every daemon that implements daemon.Reloader to reload. It returns
+// nil on success, or the startup or shutdown error, which the caller
+// maps to an exit code. Run is intended to be called once per Runner:
+// a second call would re-run d.Run() on already-running daemons. The
+// runner trusts the caller on this — a second call is not guarded.
 func (r *Runner) Run() error {
 	// signal.Notify is process-global state: the runtime binds the
 	// signal to this channel for the whole process, suppressing the
@@ -169,7 +174,9 @@ func (r *Runner) Run() error {
 					"signal", sig)
 				running = false
 			case syscall.SIGHUP:
-				r.handleSIGHUP()
+				reloadCtx, cancelReload := context.WithTimeout(context.Background(), defaultReloadTimeout)
+				r.handleSIGHUP(reloadCtx)
+				cancelReload()
 			}
 		}
 	}

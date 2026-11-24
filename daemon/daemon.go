@@ -1,5 +1,5 @@
-// Package daemon defines the contract and base lifecycle for background
-// components managed by a runner.
+// Package daemon defines the contract, the base lifecycle, and the
+// optional reload support for background components managed by a runner.
 package daemon
 
 import (
@@ -8,7 +8,8 @@ import (
 )
 
 // Daemon defines the contract for background components managed
-// by the runner's lifecycle (Run/Stop).
+// by the runner's lifecycle (Run/Stop). A daemon that can reload
+// its state without a restart additionally implements Reloader.
 type Daemon interface {
 	// Name returns a constant identifier for logging.
 	Name() string

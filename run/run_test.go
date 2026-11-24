@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/caasmo/go-daemon-runner/daemon"
 )
 
 // discardLogger silences lifecycle logging in tests.
@@ -112,6 +114,33 @@ func (d *testDaemon) Stop(ctx context.Context) error {
 	d.stopCalledChan <- true
 	return d.stopErr
 }
+
+// reloadTestDaemon is a testDaemon that also implements daemon.Reloader.
+// It reports the context of each Reload call on reloadCtxChan and
+// returns reloadErr. The channel is buffered (cap 1) so the daemon
+// never blocks on reporting.
+type reloadTestDaemon struct {
+	*testDaemon
+	reloadErr     error
+	reloadCtxChan chan context.Context
+}
+
+// newReloadTestDaemon returns a reloadTestDaemon with its reporting
+// channel created and reloadErr at nil (reload succeeds).
+func newReloadTestDaemon(name string) *reloadTestDaemon {
+	return &reloadTestDaemon{
+		testDaemon:    newTestDaemon(name),
+		reloadCtxChan: make(chan context.Context, 1),
+	}
+}
+
+// Reload reports the caller's context and returns reloadErr.
+func (d *reloadTestDaemon) Reload(ctx context.Context) error {
+	d.reloadCtxChan <- ctx
+	return d.reloadErr
+}
+
+var _ daemon.Reloader = (*reloadTestDaemon)(nil)
 
 // sendSignal delivers sig to the current process — the process the
 // runner lives in. This is how the tests drive Run's signal loop.
@@ -371,62 +400,78 @@ func TestRunner_DeadlineExceeded(t *testing.T) {
 	}
 }
 
-// TestRunner_SIGHUPReload proves the reload hook: SIGHUP fires the
-// configured reload function while the runner keeps running; a later
-// SIGINT then shuts it down cleanly.
-func TestRunner_SIGHUPReload(t *testing.T) {
-	reloadCalled := make(chan bool, 1)
-	reloadFunc := func() error {
-		reloadCalled <- true
-		return nil
-	}
-
-	d1 := newTestDaemon("d1")
+// TestRunner_SIGHUPReloadsDaemons proves SIGHUP reloads every daemon
+// that implements daemon.Reloader while the runner keeps running; a
+// later SIGINT shuts it down cleanly.
+func TestRunner_SIGHUPReloadsDaemons(t *testing.T) {
+	d1 := newReloadTestDaemon("d1")
+	d2 := newReloadTestDaemon("d2")
 
 	r, err := NewRunner(
 		WithLogger(discardLogger),
 		WithShutdownTimeout(200*time.Millisecond),
-		WithReloadFunc(reloadFunc),
 	)
 	if err != nil {
 		t.Fatalf("NewRunner: %v", err)
 	}
 	r.Add(d1)
+	r.Add(d2)
 
 	runErrChan := make(chan error, 1)
 	go func() {
 		runErrChan <- r.Run()
 	}()
 
+	// Wait for both daemons to start before sending SIGHUP.
 	select {
 	case <-d1.runCalledChan:
 	case <-time.After(1 * time.Second):
 		t.Fatal("d1 was not started")
 	}
-
-	// SIGHUP triggers the reload function, not a shutdown.
-	sendSignal(t, syscall.SIGHUP)
-
 	select {
-	case <-reloadCalled:
+	case <-d2.runCalledChan:
 	case <-time.After(1 * time.Second):
-		t.Fatal("reload function was not called")
+		t.Fatal("d2 was not started")
 	}
 
-	// The runner keeps running after the reload: no shutdown yet.
+	sendSignal(t, syscall.SIGHUP)
+
+	// Both daemons are reloaded. The context carries the runner's
+	// reload deadline.
+	var reloadCtx context.Context
+	select {
+	case reloadCtx = <-d1.reloadCtxChan:
+	case <-time.After(1 * time.Second):
+		t.Fatal("d1 was not reloaded")
+	}
+	_, hasDeadline := reloadCtx.Deadline()
+	if !hasDeadline {
+		t.Fatal("d1 reload context has no deadline")
+	}
+	select {
+	case <-d2.reloadCtxChan:
+	case <-time.After(1 * time.Second):
+		t.Fatal("d2 was not reloaded")
+	}
+
+	// The runner keeps running after the reload.
 	select {
 	case err := <-runErrChan:
 		t.Fatalf("Run returned after SIGHUP: %v", err)
 	case <-time.After(100 * time.Millisecond):
 	}
 
-	// SIGINT for a clean shutdown.
 	sendSignal(t, syscall.SIGINT)
 
 	select {
 	case <-d1.stopCalledChan:
 	case <-time.After(1 * time.Second):
 		t.Fatal("d1 was not stopped")
+	}
+	select {
+	case <-d2.stopCalledChan:
+	case <-time.After(1 * time.Second):
+		t.Fatal("d2 was not stopped")
 	}
 
 	select {
@@ -439,10 +484,167 @@ func TestRunner_SIGHUPReload(t *testing.T) {
 	}
 }
 
-// TestRunner_SIGHUPNoReload proves SIGHUP without a reload function is
-// ignored: the runner keeps running and no daemon is stopped; a later
-// SIGINT then shuts it down cleanly.
-func TestRunner_SIGHUPNoReload(t *testing.T) {
+// TestRunner_SIGHUPSkipsDaemonWithoutReloader proves SIGHUP leaves a
+// daemon that does not implement daemon.Reloader untouched: only the
+// reloadable daemon is reloaded, the plain daemon keeps running, and
+// a later SIGINT shuts both down cleanly.
+func TestRunner_SIGHUPSkipsDaemonWithoutReloader(t *testing.T) {
+	reloadable := newReloadTestDaemon("reloadable")
+	plain := newTestDaemon("plain")
+
+	r, err := NewRunner(
+		WithLogger(discardLogger),
+		WithShutdownTimeout(200*time.Millisecond),
+	)
+	if err != nil {
+		t.Fatalf("NewRunner: %v", err)
+	}
+	r.Add(reloadable)
+	r.Add(plain)
+
+	runErrChan := make(chan error, 1)
+	go func() {
+		runErrChan <- r.Run()
+	}()
+
+	select {
+	case <-reloadable.runCalledChan:
+	case <-time.After(1 * time.Second):
+		t.Fatal("reloadable daemon was not started")
+	}
+	select {
+	case <-plain.runCalledChan:
+	case <-time.After(1 * time.Second):
+		t.Fatal("plain daemon was not started")
+	}
+
+	sendSignal(t, syscall.SIGHUP)
+
+	select {
+	case <-reloadable.reloadCtxChan:
+	case <-time.After(1 * time.Second):
+		t.Fatal("reloadable daemon was not reloaded")
+	}
+
+	// The plain daemon has no reload capability, so SIGHUP must not
+	// stop it or take the runner down.
+	select {
+	case <-plain.stopCalledChan:
+		t.Fatal("plain daemon was stopped on SIGHUP")
+	case <-time.After(100 * time.Millisecond):
+	}
+	select {
+	case err := <-runErrChan:
+		t.Fatalf("Run returned after SIGHUP: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	sendSignal(t, syscall.SIGINT)
+
+	select {
+	case <-reloadable.stopCalledChan:
+	case <-time.After(1 * time.Second):
+		t.Fatal("reloadable daemon was not stopped")
+	}
+	select {
+	case <-plain.stopCalledChan:
+	case <-time.After(1 * time.Second):
+		t.Fatal("plain daemon was not stopped")
+	}
+
+	select {
+	case runErr := <-runErrChan:
+		if runErr != nil {
+			t.Fatalf("Run returned error: %v", runErr)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("Run did not return")
+	}
+}
+
+// TestRunner_SIGHUPReloadErrorContinues proves a failing reload is
+// logged, not fatal, and does not stop the reload of the remaining
+// daemons: the runner keeps running and a later SIGINT shuts it down
+// cleanly.
+func TestRunner_SIGHUPReloadErrorContinues(t *testing.T) {
+	reloadErr := errors.New("reload failed")
+	d1 := newReloadTestDaemon("d1")
+	d1.reloadErr = reloadErr
+	d2 := newReloadTestDaemon("d2")
+
+	r, err := NewRunner(
+		WithLogger(discardLogger),
+		WithShutdownTimeout(200*time.Millisecond),
+	)
+	if err != nil {
+		t.Fatalf("NewRunner: %v", err)
+	}
+	r.Add(d1)
+	r.Add(d2)
+
+	runErrChan := make(chan error, 1)
+	go func() {
+		runErrChan <- r.Run()
+	}()
+
+	select {
+	case <-d1.runCalledChan:
+	case <-time.After(1 * time.Second):
+		t.Fatal("d1 was not started")
+	}
+	select {
+	case <-d2.runCalledChan:
+	case <-time.After(1 * time.Second):
+		t.Fatal("d2 was not started")
+	}
+
+	sendSignal(t, syscall.SIGHUP)
+
+	// d1 fails; d2 still receives the reload.
+	select {
+	case <-d1.reloadCtxChan:
+	case <-time.After(1 * time.Second):
+		t.Fatal("d1 was not reloaded")
+	}
+	select {
+	case <-d2.reloadCtxChan:
+	case <-time.After(1 * time.Second):
+		t.Fatal("d2 was not reloaded after d1 failed")
+	}
+
+	select {
+	case err := <-runErrChan:
+		t.Fatalf("Run returned after a failed reload: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	sendSignal(t, syscall.SIGINT)
+
+	select {
+	case <-d1.stopCalledChan:
+	case <-time.After(1 * time.Second):
+		t.Fatal("d1 was not stopped")
+	}
+	select {
+	case <-d2.stopCalledChan:
+	case <-time.After(1 * time.Second):
+		t.Fatal("d2 was not stopped")
+	}
+
+	select {
+	case runErr := <-runErrChan:
+		if runErr != nil {
+			t.Fatalf("Run returned error: %v", runErr)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("Run did not return")
+	}
+}
+
+// TestRunner_SIGHUPNoReloader proves SIGHUP with no reloadable daemon
+// is ignored: the runner keeps running and no daemon is stopped; a
+// later SIGINT shuts it down cleanly.
+func TestRunner_SIGHUPNoReloader(t *testing.T) {
 	d1 := newTestDaemon("d1")
 
 	r, err := NewRunner(
@@ -465,13 +667,11 @@ func TestRunner_SIGHUPNoReload(t *testing.T) {
 		t.Fatal("d1 was not started")
 	}
 
-	// Without a reload function, SIGHUP is logged and ignored: the
-	// runner keeps running and the daemon is not stopped.
 	sendSignal(t, syscall.SIGHUP)
 
 	select {
 	case <-d1.stopCalledChan:
-		t.Fatal("daemon stopped on SIGHUP without reload function")
+		t.Fatal("daemon stopped on SIGHUP without a reloader")
 	case <-time.After(100 * time.Millisecond):
 	}
 	select {
@@ -480,7 +680,6 @@ func TestRunner_SIGHUPNoReload(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 
-	// SIGINT for a clean shutdown.
 	sendSignal(t, syscall.SIGINT)
 
 	select {
@@ -528,72 +727,4 @@ func TestAddDaemon_Nil(t *testing.T) {
 		t.Fatalf("NewRunner: %v", err)
 	}
 	r.Add(nil) // logs a warning, must not panic
-}
-
-// TestRunner_SIGHUPReloadError proves a failing reload function is
-// logged, not fatal: SIGHUP runs the reload (which returns an error),
-// the runner keeps running, and a later SIGINT shuts it down cleanly.
-func TestRunner_SIGHUPReloadError(t *testing.T) {
-	reloadErr := errors.New("reload failed")
-	reloadCalled := make(chan bool, 1)
-	reloadFunc := func() error {
-		reloadCalled <- true
-		return reloadErr
-	}
-
-	d1 := newTestDaemon("d1")
-
-	r, err := NewRunner(
-		WithLogger(discardLogger),
-		WithShutdownTimeout(200*time.Millisecond),
-		WithReloadFunc(reloadFunc),
-	)
-	if err != nil {
-		t.Fatalf("NewRunner: %v", err)
-	}
-	r.Add(d1)
-
-	runErrChan := make(chan error, 1)
-	go func() {
-		runErrChan <- r.Run()
-	}()
-
-	select {
-	case <-d1.runCalledChan:
-	case <-time.After(1 * time.Second):
-		t.Fatal("d1 was not started")
-	}
-
-	// The failing reload still runs: the reload function is called and
-	// the runner keeps running instead of shutting down.
-	sendSignal(t, syscall.SIGHUP)
-
-	select {
-	case <-reloadCalled:
-	case <-time.After(1 * time.Second):
-		t.Fatal("reload function was not called")
-	}
-	select {
-	case err := <-runErrChan:
-		t.Fatalf("Run returned after SIGHUP: %v", err)
-	case <-time.After(100 * time.Millisecond):
-	}
-
-	// SIGINT for a clean shutdown.
-	sendSignal(t, syscall.SIGINT)
-
-	select {
-	case <-d1.stopCalledChan:
-	case <-time.After(1 * time.Second):
-		t.Fatal("d1 was not stopped")
-	}
-
-	select {
-	case runErr := <-runErrChan:
-		if runErr != nil {
-			t.Fatalf("Run returned error: %v", runErr)
-		}
-	case <-time.After(1 * time.Second):
-		t.Fatal("Run did not return")
-	}
 }

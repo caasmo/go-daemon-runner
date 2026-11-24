@@ -1,8 +1,8 @@
 package main
 
 import (
+	"context"
 	"log/slog"
-	"sync/atomic"
 	"time"
 
 	"github.com/caasmo/go-daemon-runner/daemon"
@@ -12,10 +12,10 @@ import (
 //
 // Its real-world counterpart is a component that snapshots a database
 // (or any stateful resource) on a fixed schedule: every tick it takes
-// a snapshot of the DB. The SIGHUP reload hook toggles a pause flag
-// in place, so a paused backup simply skips its ticks — visible in
-// the logs as "backup skipped - paused" — until the next SIGHUP
-// unpauses it.
+// a snapshot of the DB. It implements daemon.Reloader: SIGHUP toggles
+// its pause flag inside the daemon's loop, so a paused backup simply
+// skips its ticks — visible in the logs as "backup skipped - paused" —
+// until the next SIGHUP unpauses it.
 //
 // Blocking pattern 1 — a select on Ctx.Done() and a ticker: the
 // goroutine listens for Stop's shutdown signal and exits when it
@@ -23,16 +23,17 @@ import (
 // cleanup (the first defer executes last), so Stop only returns once
 // the ticker is stopped and the goroutine has fully exited.
 type PeriodicBackupDaemon struct {
-	daemon.Base // README rule 4: Stop inherited from Base, waits on ShutdownDone
-	interval    time.Duration
-	paused      *atomic.Bool // shared with the reload hook in main.go; read on every tick
+	daemon.Base       // README rule 4: Stop inherited from Base, waits on ShutdownDone
+	daemon.ReloadBase // implements daemon.Reloader; the loop receives reload requests
+	interval          time.Duration
+	paused            bool // owned by the loop; toggled by reload
 }
 
-func NewPeriodicBackupDaemon(interval time.Duration, paused *atomic.Bool, logger *slog.Logger) *PeriodicBackupDaemon {
+func NewPeriodicBackupDaemon(interval time.Duration, logger *slog.Logger) *PeriodicBackupDaemon {
 	d := &PeriodicBackupDaemon{
-		Base:     daemon.NewBase("PeriodicBackupDaemon", logger),
-		interval: interval,
-		paused:   paused,
+		Base:       daemon.NewBase("PeriodicBackupDaemon", logger),
+		ReloadBase: daemon.NewReloadBase(),
+		interval:   interval,
 	}
 	// Every log line carries the daemon's identity: reuse the
 	// daemon_name attribute the runner attaches to lifecycle logs.
@@ -51,10 +52,14 @@ func (d *PeriodicBackupDaemon) Run() error {
 			select {
 			case <-d.Ctx.Done(): // README rule 2: listen for Stop's shutdown signal and exit
 				return
+			case reloadCtx := <-d.ReloadCh:
+				// The reload runs here, in the daemon's own loop, so it
+				// can change d.paused without a lock. Send the result
+				// back even when it fails: Reload waits for it.
+				reloadErr := d.reload(reloadCtx)
+				d.ReloadDone <- reloadErr
 			case <-ticker.C:
-				// The reload hook in main.go flips the shared flag
-				// on SIGHUP; a load here picks it up next tick.
-				if d.paused.Load() {
+				if d.paused {
 					d.Logger.Info("backup skipped - paused")
 					continue
 				}
@@ -62,6 +67,22 @@ func (d *PeriodicBackupDaemon) Run() error {
 			}
 		}
 	}()
+	return nil
+}
+
+// reload toggles the backup pause flag. It runs inside the daemon's
+// loop, so d.paused needs no lock. The context check makes the reload
+// honor the runner's deadline: toggling a bool never blocks, but a
+// real reload that reads a file or calls a service must return
+// ctx.Err() when the deadline expires.
+func (d *PeriodicBackupDaemon) reload(ctx context.Context) error {
+	reloadErr := ctx.Err()
+	if reloadErr != nil {
+		return reloadErr
+	}
+
+	d.paused = !d.paused
+	d.Logger.Info("reload: backup pause flag", "paused", d.paused)
 	return nil
 }
 

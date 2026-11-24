@@ -11,7 +11,7 @@
 
 Compose your program from background goroutines — go-daemon-runner provides the process lifecycle around them: sequential start, signal handling, and concurrent, deadline-bounded graceful shutdown.
 
-go-daemon-runner is for Go programs built from background goroutines. Your program is a set of components that run for its lifetime — periodic backups, schedulers, log aggregation, replication — each one a goroutine with a start/stop contract. The runner starts them sequentially in registration order, waits for SIGINT/SIGQUIT/SIGTERM, shuts them down concurrently within a configurable deadline (default 15s), and runs your reload hook on SIGHUP — the process keeps running, no restart.
+go-daemon-runner is for Go programs built from background goroutines. Your program is a set of components that run for its lifetime — periodic backups, schedulers, log aggregation, replication — each one a goroutine with a start/stop contract. The runner starts them sequentially in registration order, waits for SIGINT/SIGQUIT/SIGTERM, shuts them down concurrently within a configurable deadline (default 15s), and reloads the daemons that support it on SIGHUP — the process keeps running, no restart.
 
 # Content
 
@@ -26,7 +26,7 @@ go-daemon-runner is for Go programs built from background goroutines. Your progr
 - [Wiring daemons](#wiring-daemons)
   - [Options](#options)
   - [Signals](#signals)
-  - [The reload hook](#the-reload-hook)
+  - [Reloading daemons](#reloading-daemons)
 - [Communicating daemons](#communicating-daemons)
 
 ## Features
@@ -34,7 +34,7 @@ go-daemon-runner is for Go programs built from background goroutines. Your progr
 - **Graceful shutdown on termination signals.** On SIGINT, SIGQUIT, or SIGTERM the runner stops every started daemon concurrently and waits for each to complete before `Run` returns. No daemon is left running, no goroutine leaked, no process left hanging.
 - **Deadline-bounded shutdown.** Shutdown is bounded by a configurable deadline (default 15s, `WithShutdownTimeout`). A daemon that fails to stop in time is reported — `Run` returns its error — instead of being waited on indefinitely.
 - **Rollback on startup failure.** Daemons start sequentially in registration order. If one fails to start, the runner stops the daemons already running and `Run` returns the startup error: the process never continues half-started.
-- **Reload on SIGHUP without restart.** SIGHUP invokes the hook set via `WithReloadFunc` while all daemons keep running — `systemctl reload` works. With no hook configured, SIGHUP is logged and ignored.
+- **Reload on SIGHUP without restart.** SIGHUP asks every daemon that implements `daemon.Reloader` to reload while all daemons keep running — `systemctl reload` works. Daemons without reload support are skipped, and the process keeps running.
 - **Errors surfaced to the caller.** `Run` returns startup and shutdown errors (joined), so the caller can map them to exit codes instead of guessing from logs.
 
 ## Installation
@@ -45,14 +45,14 @@ go get github.com/caasmo/go-daemon-runner
 
 ## The two packages
 
-- `daemon` (`github.com/caasmo/go-daemon-runner/daemon`) — the [`Daemon`](daemon/daemon.go) interface and the [`Base`](daemon/daemon.go) helper struct for building daemons. Stdlib only.
+- `daemon` (`github.com/caasmo/go-daemon-runner/daemon`) — the [`Daemon`](daemon/daemon.go) interface and the [`Base`](daemon/daemon.go) and [`ReloadBase`](daemon/reload.go) helper structs for building daemons. Stdlib only.
 - `run` (`github.com/caasmo/go-daemon-runner/run`) — the [`Runner`](run/run.go) dispatcher: sequential start, signal handling, and concurrent graceful shutdown.
 
 Usage pattern: `daemon` to build daemons, `run` to run them.
 
 ## Runnable example
 
-A complete runnable example of the library — daemons showing how they listen for the shutdown signal sent by `Stop` (rule 2), including a communicating pair (a producer sending messages to a logger that owns the channel), plus the reload hook — lives in [`cmd/example`](cmd/example/main.go):
+A complete runnable example of the library — daemons showing how they listen for the shutdown signal sent by `Stop` (rule 2), including a communicating pair (a producer sending messages to a logger that owns the channel), plus a daemon that reloads on SIGHUP — lives in [`cmd/example`](cmd/example/main.go):
 
 ```
 go run ./cmd/example
@@ -91,6 +91,8 @@ The interface alone is not enough. The runner calls [`Run`](daemon/daemon.go) at
 4. **`Stop` must wait for completion.** Signal the daemon to shut down and wait until the goroutine signals completion, or until the context deadline expires, whichever comes first.
 
 The runner calls `Stop` once per `Run`. Calling it a second time is currently safe — it returns `nil` once shutdown has completed — but that is an implementation detail and may change, so treat repeated calls as undefined, as with [`io.Closer`](https://pkg.go.dev/io#Closer): the behavior after the first call is not part of the contract.
+
+Reload is optional. A daemon that wants to reload on SIGHUP additionally implements `daemon.Reloader`; [Reloading daemons](#reloading-daemons) shows how.
 
 ### Example
 
@@ -187,50 +189,71 @@ if err := r.Run(); err != nil {
 
 - [`WithLogger(l *slog.Logger)`](run/run.go) — the logger for lifecycle logging. Default: `slog.Default()`; a nil logger falls back to it.
 - [`WithShutdownTimeout(d time.Duration)`](run/run.go) — the deadline bounding the graceful shutdown. Default: 15 seconds; a non-positive duration makes `NewRunner` return an error wrapping [`ErrRunner`](run/run.go), checkable with `errors.Is`.
-- [`WithReloadFunc(fn func() error)`](run/run.go) — the function run on SIGHUP. Default: none — SIGHUP is logged and ignored.
 
 ### Signals
 
-The runner supports the following signals — SIGHUP is the only one with a function, a single reload hook:
+The runner supports the following signals:
 
 | Signal | Action |
 | --- | --- |
 | SIGINT, SIGQUIT, SIGTERM | Graceful shutdown of all daemons |
-| SIGHUP | Reload hook (below); ignored if none configured |
+| SIGHUP | Reload every daemon that implements `daemon.Reloader`; daemons without it are skipped |
 
 Under systemd: `systemctl stop` sends SIGTERM, `systemctl reload` sends SIGHUP via `ExecReload=/bin/kill -HUP $MAINPID`.
 
-### The reload hook
+### Reloading daemons
 
-SIGHUP does not shut the runner down — it runs the `reloadFunc` set via `WithReloadFunc` and the signal loop keeps running:
+SIGHUP does not shut the runner down. It asks every daemon that implements [`daemon.Reloader`](daemon/reload.go) to reload, in registration order; daemons without the interface are skipped. Under systemd: `systemctl reload` → `ExecReload=/bin/kill -HUP $MAINPID` → SIGHUP → `Reload` on each reloadable daemon.
 
-`systemctl reload` → `ExecReload=/bin/kill -HUP $MAINPID` → SIGHUP → `reloadFunc`
-
-`reloadFunc` is a closure that captures whatever state the reload needs and rebuilds it in place; the daemon instance is never swapped, so the rebuilt state takes effect on its next iteration. A failed reload is logged and the runner keeps running. Keep `reloadFunc` fast: it runs synchronously inside the signal loop, and termination signals arriving while it blocks can be dropped.
-
-Wired into the runner with the example above:
+A daemon opts in by embedding [`daemon.ReloadBase`](daemon/reload.go) next to `Base` and adding a reload case to its loop. `ReloadBase` provides two unbuffered channels: `ReloadCh` carries the caller's context into the loop (the send succeeds only when the loop is reading), and `ReloadDone` carries the result back (the loop hands it only to a waiting caller). Create them with `daemon.NewReloadBase()` in the constructor. The loop does the work, so it can change the daemon's state without locks — the loop is the only goroutine that touches it.
 
 ```go
-// pseudo-code: rebuild the daemon's state in place
-reloadFunc := func() error {
-	cfg, err := fetchConfig()
-	if err != nil {
-		return err
-	}
-	schedulerDaemon.Update(cfg) // takes effect on the next tick
+type BackupDaemon struct {
+	daemon.Base
+	daemon.ReloadBase // implements daemon.Reloader
+	interval time.Duration
+	paused   bool // owned by the loop; toggled by reload
+}
+
+func (d *BackupDaemon) Run() error {
+	go func() {
+		defer close(d.ShutdownDone)
+
+		ticker := time.NewTicker(d.interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-d.Ctx.Done():
+				return
+			case reloadCtx := <-d.ReloadCh:
+				reloadErr := d.reload(reloadCtx)
+				d.ReloadDone <- reloadErr
+			case <-ticker.C:
+				if d.paused {
+					continue
+				}
+				// ... do the daemon's normal work ...
+			}
+		}
+	}()
 	return nil
 }
 
-r, err := run.NewRunner(run.WithReloadFunc(reloadFunc))
-if err != nil {
-	panic(err)
-}
-r.Add(backupDaemon)
-r.Add(schedulerDaemon)
-if err := r.Run(); err != nil {
-	panic(err)
+func (d *BackupDaemon) reload(ctx context.Context) error {
+	reloadErr := ctx.Err()
+	if reloadErr != nil {
+		return reloadErr
+	}
+
+	d.paused = !d.paused
+	return nil
 }
 ```
+
+The reload runs inside the daemon's loop, so the loop cannot handle the next tick or the shutdown signal until the reload returns. The runner gives the whole SIGHUP pass a 15-second deadline through `ctx`: every reload in that pass shares it. A reload that does blocking work must watch `ctx` and return when it expires. A reload that ignores the context blocks the runner's signal loop. A daemon that is not reading `ReloadCh` makes `Reload` return the context error after the deadline instead of blocking forever.
+
+`Reload` is meant to be called once per reload signal. The signal loop handles one SIGHUP at a time, so the runner's calls are sequential. The unbuffered `ReloadCh` also serializes concurrent callers: the daemon's loop accepts one request at a time and sends that request's result before accepting the next, so each caller receives the result of its own request. A caller whose context expires while waiting its turn returns the context error without delivering the request. A failed reload is logged with the daemon's name, and the runner reloads the remaining daemons and keeps running.
 
 ## Communicating daemons
 
@@ -239,4 +262,3 @@ Daemons communicate the Go way — shared channels, not shared state. Forms:
 - **Channel sharing at init time** — as in the example: main wires the write-end of one daemon's channel into another's constructor (`NewLogProducerDaemon(loggerDaemon.Chan(), ...)` in [main.go](cmd/example/main.go)). The consumer owns the channel, the drain, and the shutdown flush; producers hold only the write-end. See [logger_daemon.go](cmd/example/logger_daemon.go) and [log_producer_daemon.go](cmd/example/log_producer_daemon.go).
 - **Channel sharing at runtime** — a daemon exposes a `Submit`-style method (`QueueDaemon.SubmitJob` in [queue_daemon.go](cmd/example/queue_daemon.go)); callers never touch the channel.
 - **Context exposure** — a daemon's `Chan()` returns its context too, so producers stop sending before the owner drains and closes ([restinpieces' log daemon](https://github.com/caasmo/restinpieces/blob/master/log/daemon.go)).
-- **Shared state** — a common pointer mutated in place, e.g. the reload hook flipping the backup pause flag in [main.go](cmd/example/main.go).

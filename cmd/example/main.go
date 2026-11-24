@@ -6,7 +6,6 @@ package main
 import (
 	"log/slog"
 	"os"
-	"sync/atomic"
 	"time"
 
 	"github.com/caasmo/go-daemon-runner/run"
@@ -17,17 +16,9 @@ func main() {
 
 	// === PeriodicBackupDaemon: periodic database snapshot ===
 	// Ticks every 10 seconds and takes a snapshot of the DB.
-	//
-	// SIGHUP deactivates the backup: the reload hook flips the
-	// shared pause flag, which the daemon reads on every tick. A
-	// second SIGHUP resumes it. Try it: kill -HUP <pid>
-	backupPaused := &atomic.Bool{}
-	backupDaemon := NewPeriodicBackupDaemon(10*time.Second, backupPaused, logger)
-	reloadFunc := func() error {
-		backupPaused.Store(!backupPaused.Load()) // flip: deactivate the backup
-		logger.Info("reload: backup pause flag", "paused", backupPaused.Load())
-		return nil
-	}
+	// SIGHUP toggles the daemon's pause flag: the daemon owns its
+	// reload, so no state is shared with main. Try it: kill -HUP <pid>
+	backupDaemon := NewPeriodicBackupDaemon(10*time.Second, logger)
 
 	// === ContinuousReplicaDaemon: continuous database replication ===
 	// The daemon delegates to a context-aware replication engine —
@@ -47,7 +38,6 @@ func main() {
 	r, err := run.NewRunner(
 		run.WithLogger(logger),
 		run.WithShutdownTimeout(10*time.Second),
-		run.WithReloadFunc(reloadFunc),
 	)
 	if err != nil {
 		logger.Error("failed to create runner", "error", err)
