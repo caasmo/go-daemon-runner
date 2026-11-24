@@ -20,6 +20,11 @@ type Daemon interface {
 	Run() error
 	// Stop signals the daemon to shut down. The provided context
 	// carries the graceful shutdown deadline.
+	//
+	// Stop is meant to be called once per Run. Calling it again is
+	// currently safe and returns nil once shutdown is complete, but
+	// that is an implementation detail and may change; treat multiple
+	// calls as undefined.
 	Stop(ctx context.Context) error
 }
 
@@ -71,6 +76,11 @@ func (b *Base) Name() string {
 
 // Stop signals the daemon's background goroutine to exit and waits
 // for it to finish or for the caller's context to expire.
+//
+// Stop is meant to be called once per Run. Calling it again is
+// currently safe and returns nil once shutdown is complete, but that
+// is an implementation detail and may change; treat multiple calls as
+// undefined.
 func (b *Base) Stop(ctx context.Context) error {
 	b.Logger.Info("stopping daemon", "daemon_name", b.name)
 	b.Cancel()

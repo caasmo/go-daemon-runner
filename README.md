@@ -90,6 +90,8 @@ The interface alone is not enough. The runner calls [`Run`](daemon/daemon.go) at
 
 4. **`Stop` must wait for completion.** Signal the daemon to shut down and wait until the goroutine signals completion, or until the context deadline expires, whichever comes first.
 
+The runner calls `Stop` once per `Run`. Calling it a second time is currently safe — it returns `nil` once shutdown has completed — but that is an implementation detail and may change, so treat repeated calls as undefined, as with [`io.Closer`](https://pkg.go.dev/io#Closer): the behavior after the first call is not part of the contract.
+
 ### Example
 
 The simplest daemon that satisfies all four rules — every rule is visible in the code:
