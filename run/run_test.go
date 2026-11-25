@@ -698,12 +698,116 @@ func TestRunner_SIGHUPNoReloader(t *testing.T) {
 	}
 }
 
+// TestRunner_SIGHUPReloadTimeout proves the reload context carries the
+// configured reload timeout instead of the default.
+func TestRunner_SIGHUPReloadTimeout(t *testing.T) {
+	const reloadTimeout = 3 * time.Second
+
+	d1 := newReloadTestDaemon("d1")
+
+	r, err := NewRunner(
+		WithLogger(discardLogger),
+		WithShutdownTimeout(200*time.Millisecond),
+		WithReloadTimeout(reloadTimeout),
+	)
+	if err != nil {
+		t.Fatalf("NewRunner: %v", err)
+	}
+	r.Add(d1)
+
+	runErrChan := make(chan error, 1)
+	go func() {
+		runErrChan <- r.Run()
+	}()
+
+	select {
+	case <-d1.runCalledChan:
+	case <-time.After(1 * time.Second):
+		t.Fatal("d1 was not started")
+	}
+
+	sendSignal(t, syscall.SIGHUP)
+
+	var reloadCtx context.Context
+	select {
+	case reloadCtx = <-d1.reloadCtxChan:
+	case <-time.After(1 * time.Second):
+		t.Fatal("d1 was not reloaded")
+	}
+
+	deadline, ok := reloadCtx.Deadline()
+	if !ok {
+		t.Fatal("reload context has no deadline")
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		t.Fatalf("reload deadline already expired: %s", remaining)
+	}
+	if remaining > reloadTimeout {
+		t.Fatalf("reload deadline is %s away, want at most the configured %s", remaining, reloadTimeout)
+	}
+
+	sendSignal(t, syscall.SIGINT)
+
+	select {
+	case <-d1.stopCalledChan:
+	case <-time.After(1 * time.Second):
+		t.Fatal("d1 was not stopped")
+	}
+
+	select {
+	case runErr := <-runErrChan:
+		if runErr != nil {
+			t.Fatalf("Run returned error: %v", runErr)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("Run did not return")
+	}
+}
+
 // TestNewRunner_InvalidShutdownTimeout proves NewRunner rejects a
 // non-positive shutdown timeout with an error wrapping ErrRunner.
 func TestNewRunner_InvalidShutdownTimeout(t *testing.T) {
 	_, err := NewRunner(WithShutdownTimeout(0))
 	if !errors.Is(err, ErrRunner) {
 		t.Fatalf("NewRunner returned %v, want ErrRunner", err)
+	}
+}
+
+// TestNewRunner_DefaultReloadTimeout proves NewRunner defaults the
+// reload timeout to defaultReloadTimeout.
+func TestNewRunner_DefaultReloadTimeout(t *testing.T) {
+	r, err := NewRunner()
+	if err != nil {
+		t.Fatalf("NewRunner: %v", err)
+	}
+	if r.reloadTimeout != defaultReloadTimeout {
+		t.Fatalf("reloadTimeout = %s, want %s", r.reloadTimeout, defaultReloadTimeout)
+	}
+}
+
+// TestNewRunner_ReloadTimeout proves WithReloadTimeout stores the
+// configured deadline.
+func TestNewRunner_ReloadTimeout(t *testing.T) {
+	want := 7 * time.Second
+
+	r, err := NewRunner(WithReloadTimeout(want))
+	if err != nil {
+		t.Fatalf("NewRunner: %v", err)
+	}
+	if r.reloadTimeout != want {
+		t.Fatalf("reloadTimeout = %s, want %s", r.reloadTimeout, want)
+	}
+}
+
+// TestNewRunner_InvalidReloadTimeout proves NewRunner rejects a
+// non-positive reload timeout with an error wrapping ErrRunner.
+func TestNewRunner_InvalidReloadTimeout(t *testing.T) {
+	for _, d := range []time.Duration{0, -time.Second} {
+		_, err := NewRunner(WithReloadTimeout(d))
+		if !errors.Is(err, ErrRunner) {
+			t.Fatalf("NewRunner(WithReloadTimeout(%s)) returned %v, want ErrRunner", d, err)
+		}
 	}
 }
 

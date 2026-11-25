@@ -24,6 +24,7 @@ type Runner struct {
 	daemons         []daemon.Daemon
 	logger          *slog.Logger
 	shutdownTimeout time.Duration
+	reloadTimeout   time.Duration
 }
 
 // defaultShutdownTimeout bounds the graceful shutdown phase when
@@ -31,10 +32,10 @@ type Runner struct {
 // ShutdownGracefulTimeout default of 15s.
 const defaultShutdownTimeout = 15 * time.Second
 
-// defaultReloadTimeout bounds the reload phase started by SIGHUP.
-// The runner passes one deadline for the whole SIGHUP pass; every
-// reload in that pass shares it. A reload that ignores the deadline
-// blocks the signal loop.
+// defaultReloadTimeout bounds the reload phase started by SIGHUP when
+// WithReloadTimeout is not provided. The runner passes one deadline
+// for the whole SIGHUP pass; every reload in that pass shares it. A
+// reload that ignores the deadline blocks the signal loop.
 const defaultReloadTimeout = 15 * time.Second
 
 // defaultErrGroupLimit bounds the number of daemons stopped
@@ -44,7 +45,7 @@ const defaultErrGroupLimit = 32
 
 // ErrRunner is the framework's general sentinel error: NewRunner
 // returns an error wrapping it when an option value is invalid,
-// e.g. a non-positive shutdown timeout to WithShutdownTimeout.
+// e.g. a non-positive shutdown or reload timeout.
 var ErrRunner = errors.New("runner error")
 
 // Option configures a Runner created by NewRunner.
@@ -67,15 +68,29 @@ func WithShutdownTimeout(d time.Duration) Option {
 	}
 }
 
+// WithReloadTimeout sets the deadline bounding the reload phase started
+// by SIGHUP. The default is 15 seconds; a non-positive duration makes
+// NewRunner return an error wrapping ErrRunner.
+//
+// The runner passes one deadline for the whole SIGHUP pass; every
+// reload in that pass shares it. A reload that ignores the deadline
+// blocks the signal loop.
+func WithReloadTimeout(d time.Duration) Option {
+	return func(r *Runner) {
+		r.reloadTimeout = d
+	}
+}
+
 // NewRunner creates a Runner with default settings: slog.Default()
-// logger and a 15-second shutdown timeout. Customize with WithLogger
-// and WithShutdownTimeout. It returns an error wrapping ErrRunner
-// when a configured option value is invalid, e.g. a non-positive
-// shutdown timeout.
+// logger, a 15-second shutdown timeout, and a 15-second reload timeout.
+// Customize with WithLogger, WithShutdownTimeout and WithReloadTimeout.
+// It returns an error wrapping ErrRunner when a configured option value
+// is invalid, e.g. a non-positive shutdown or reload timeout.
 func NewRunner(opts ...Option) (*Runner, error) {
 	r := &Runner{
 		logger:          slog.Default(),
 		shutdownTimeout: defaultShutdownTimeout,
+		reloadTimeout:   defaultReloadTimeout,
 		daemons:         make([]daemon.Daemon, 0),
 	}
 	for _, opt := range opts {
@@ -86,6 +101,9 @@ func NewRunner(opts ...Option) (*Runner, error) {
 	}
 	if r.shutdownTimeout <= 0 {
 		return nil, fmt.Errorf("%w: shutdown timeout must be positive, got %s", ErrRunner, r.shutdownTimeout)
+	}
+	if r.reloadTimeout <= 0 {
+		return nil, fmt.Errorf("%w: reload timeout must be positive, got %s", ErrRunner, r.reloadTimeout)
 	}
 	return r, nil
 }
@@ -174,7 +192,7 @@ func (r *Runner) Run() error {
 					"signal", sig)
 				running = false
 			case syscall.SIGHUP:
-				reloadCtx, cancelReload := context.WithTimeout(context.Background(), defaultReloadTimeout)
+				reloadCtx, cancelReload := context.WithTimeout(context.Background(), r.reloadTimeout)
 				r.handleSIGHUP(reloadCtx)
 				cancelReload()
 			}

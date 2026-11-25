@@ -189,6 +189,7 @@ if err := r.Run(); err != nil {
 
 - [`WithLogger(l *slog.Logger)`](run/run.go) — the logger for lifecycle logging. Default: `slog.Default()`; a nil logger falls back to it.
 - [`WithShutdownTimeout(d time.Duration)`](run/run.go) — the deadline bounding the graceful shutdown. Default: 15 seconds; a non-positive duration makes `NewRunner` return an error wrapping [`ErrRunner`](run/run.go), checkable with `errors.Is`.
+- [`WithReloadTimeout(d time.Duration)`](run/run.go) — the deadline bounding the reload pass started by SIGHUP. Default: 15 seconds; one deadline covers the whole pass, so every reload shares it. A non-positive duration makes `NewRunner` return an error wrapping [`ErrRunner`](run/run.go), checkable with `errors.Is`.
 
 ### Signals
 
@@ -251,7 +252,7 @@ func (d *BackupDaemon) reload(ctx context.Context) error {
 }
 ```
 
-The reload runs inside the daemon's loop, so the loop cannot handle the next tick or the shutdown signal until the reload returns. The runner gives the whole SIGHUP pass a 15-second deadline through `ctx`: every reload in that pass shares it. A reload that does blocking work must watch `ctx` and return when it expires. A reload that ignores the context blocks the runner's signal loop. A daemon that is not reading `ReloadCh` makes `Reload` return the context error after the deadline instead of blocking forever.
+The reload runs inside the daemon's loop, so the loop cannot handle the next tick or the shutdown signal until the reload returns. The runner gives the whole SIGHUP pass a deadline through `ctx` — 15 seconds by default, configurable with [`WithReloadTimeout`](#options): every reload in that pass shares it. A reload that does blocking work must watch `ctx` and return when it expires. A reload that ignores the context blocks the runner's signal loop. A daemon that is not reading `ReloadCh` makes `Reload` return the context error after the deadline instead of blocking forever.
 
 `Reload` is meant to be called once per reload signal. The signal loop handles one SIGHUP at a time, so the runner's calls are sequential. The unbuffered `ReloadCh` also serializes concurrent callers: the daemon's loop accepts one request at a time and sends that request's result before accepting the next, so each caller receives the result of its own request. A caller whose context expires while waiting its turn returns the context error without delivering the request. A failed reload is logged with the daemon's name, and the runner reloads the remaining daemons and keeps running.
 
