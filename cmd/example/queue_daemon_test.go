@@ -19,6 +19,16 @@ func TestQueueDaemon_Lifecycle(t *testing.T) {
 		t.Fatalf("Run returned error: %v", err)
 	}
 
+	// Wait until the loop has taken both jobs: Stop drains the in-flight
+	// workers, so every submitted job is processed.
+	deadline := time.Now().Add(time.Second)
+	for len(d.jobs) > 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("queue did not take the submitted jobs")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if err := d.Stop(ctx); err != nil {
