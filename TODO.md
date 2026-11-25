@@ -49,3 +49,9 @@ References:
 - `run/run.go` (`handleSIGHUP`)
 - `cmd/example/periodic_backup_daemon.go`
 - `README.md` (reload section)
+
+# ci: badge bot commits to master orphan tags on rebase
+
+- `test.yml`, `sloc.yml`, `dependencies.yml` push badge JSON to `master`; a rebase rewrites those commits and orphans any tag on them (v0.3.0 orphaned this way)
+- fix: push badges to a dedicated `badges` branch, point `README.md` badge URLs at it, never rebase tagged commits
+- refs: `.github/workflows/test.yml`, `.github/workflows/sloc.yml`, `.github/workflows/dependencies.yml`, `README.md`
